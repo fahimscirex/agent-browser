@@ -118,19 +118,6 @@ pub(crate) fn touch_tap(origin: &Origin) -> Value {
     )
 }
 
-/// Build the BiDi actions for a touch swipe.
-pub(crate) fn touch_swipe(from: &Origin, to: &Origin) -> Value {
-    pointer_source(
-        "touch",
-        vec![
-            pointer_move(from),
-            json!({ "type": "pointerDown", "button": 0 }),
-            pointer_move(to),
-            json!({ "type": "pointerUp", "button": 0 }),
-        ],
-    )
-}
-
 /// Build the BiDi actions for a touch swipe with intermediate moves toward `to`.
 pub(crate) fn touch_swipe_path(from: &Origin, to: &Origin, steps: u32) -> Value {
     let (fx, fy, _) = origin_json(from);

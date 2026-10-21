@@ -779,7 +779,7 @@ pub fn state_rename(old_path: &str, new_name: &str) -> Result<Value, String> {
     }))
 }
 
-fn encrypt_data(data: &[u8], key_str: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn encrypt_data(data: &[u8], key_str: &str) -> Result<Vec<u8>, String> {
     let mut hasher = Sha256::new();
     hasher.update(key_str.as_bytes());
     let key_bytes = hasher.finalize();

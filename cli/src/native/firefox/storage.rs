@@ -401,7 +401,7 @@ pub async fn validate_restore(
 ) -> Result<(), String> {
     if let Some(pattern) = url_pattern {
         let url = ff.url().await?;
-        if !super::page::url_matches(pattern, &url) {
+        if !crate::native::actions::route_url_matches(pattern, &url) {
             return Err(format!(
                 "restore URL validation failed: '{}' did not match '{}'",
                 url, pattern
