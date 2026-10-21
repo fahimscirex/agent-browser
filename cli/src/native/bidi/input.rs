@@ -28,12 +28,12 @@ pub(crate) fn key_chord_actions(chord: &str) -> Value {
 
     let mut actions = Vec::new();
     for modifier in &modifiers {
-        actions.push(json!({ "type": "keyDown", "value": modifier_value(modifier) }));
+        actions.push(json!({ "type": "keyDown", "value": key_value(modifier) }));
     }
     actions.push(json!({ "type": "keyDown", "value": value }));
     actions.push(json!({ "type": "keyUp", "value": value }));
     for modifier in modifiers.iter().rev() {
-        actions.push(json!({ "type": "keyUp", "value": modifier_value(modifier) }));
+        actions.push(json!({ "type": "keyUp", "value": key_value(modifier) }));
     }
     key_source(actions)
 }
@@ -105,20 +105,8 @@ pub(crate) fn pointer_wheel(origin: &Origin, delta_x: f64, delta_y: f64) -> Valu
     }])
 }
 
-/// Build the BiDi actions for a touch tap.
-pub(crate) fn touch_tap(origin: &Origin) -> Value {
-    pointer_source(
-        "touch",
-        vec![
-            pointer_move(origin),
-            json!({ "type": "pointerDown", "button": 0 }),
-            json!({ "type": "pointerUp", "button": 0 }),
-        ],
-    )
-}
-
-/// Build the BiDi actions for a touch swipe with intermediate moves toward `to`.
-pub(crate) fn touch_swipe_path(from: &Origin, to: &Origin, steps: u32) -> Value {
+/// Build the BiDi actions for a `pointer_type` drag or swipe between two points, emitting `steps` intermediate moves.
+pub(crate) fn pointer_path(pointer_type: &str, from: &Origin, to: &Origin, steps: u32) -> Value {
     let (fx, fy, _) = origin_json(from);
     let (tx, ty, _) = origin_json(to);
     let steps = steps.max(1);
@@ -136,7 +124,19 @@ pub(crate) fn touch_swipe_path(from: &Origin, to: &Origin, steps: u32) -> Value 
         }));
     }
     actions.push(json!({ "type": "pointerUp", "button": 0 }));
-    pointer_source("touch", actions)
+    pointer_source(pointer_type, actions)
+}
+
+/// Build the BiDi actions for a touch tap.
+pub(crate) fn touch_tap(origin: &Origin) -> Value {
+    pointer_source(
+        "touch",
+        vec![
+            pointer_move(origin),
+            json!({ "type": "pointerDown", "button": 0 }),
+            json!({ "type": "pointerUp", "button": 0 }),
+        ],
+    )
 }
 
 /// Build the BiDi actions for one raw touch event over `points`.
@@ -219,16 +219,6 @@ fn key_value(key_name: &str) -> String {
         "PageUp" => "\u{E00E}".to_string(),
         "PageDown" => "\u{E00F}".to_string(),
         _ => key_text(key_name).unwrap_or_else(|| key_name.to_string()),
-    }
-}
-
-fn modifier_value(modifier: &str) -> String {
-    match modifier {
-        "Control" => "\u{E009}".to_string(),
-        "Shift" => "\u{E008}".to_string(),
-        "Alt" => "\u{E00A}".to_string(),
-        "Meta" => "\u{E03D}".to_string(),
-        _ => modifier.to_string(),
     }
 }
 
