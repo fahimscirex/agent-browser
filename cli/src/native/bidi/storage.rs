@@ -320,45 +320,122 @@ pub async fn storage_clear(cmd: &Value, state: &mut DaemonState) -> Result<Value
     Ok(json!({ "cleared": true }))
 }
 
-async fn collect_origins(ff: &FirefoxSession) -> Result<Vec<OriginStorage>, String> {
-    let tree = ff
+fn collect_context_ids(contexts: &Value, out: &mut Vec<String>) {
+    for context in contexts.as_array().into_iter().flatten() {
+        let scriptable = !context["url"].as_str().unwrap_or("").starts_with("about:");
+        if let (true, Some(id)) = (scriptable, context["context"].as_str()) {
+            out.push(id.to_string());
+        }
+        collect_context_ids(&context["children"], out);
+    }
+}
+
+async fn read_origin(ff: &FirefoxSession, context: &str) -> Result<OriginStorage, String> {
+    let data = ff
         .bidi
-        .send("browsingContext.getTree", json!({"maxDepth": 0}))
+        .call_function(context, ORIGIN_STORAGE_JS, None, Vec::new())
+        .await
+        .map_err(|e| format!("Failed to read storage: {e}"))?;
+    serde_json::from_value(data).map_err(|e| format!("Failed to read storage: {e}"))
+}
+
+fn has_entries(origin: &OriginStorage) -> bool {
+    !origin.local_storage.is_empty() || !origin.session_storage.is_empty()
+}
+
+/// Reads each origin's storage from a throwaway background tab whose requests are answered
+/// with a blank page, so the active page never moves and no origin's server is contacted.
+async fn collect_via_temp_context(
+    ff: &mut FirefoxSession,
+    origins: &[String],
+) -> Result<Vec<OriginStorage>, String> {
+    super::network::ensure_intercept(ff).await?;
+    let created = ff
+        .bidi
+        .send(
+            "browsingContext.create",
+            json!({"type": "tab", "background": true}),
+        )
         .await?;
-    let contexts = tree["contexts"]
-        .as_array()
-        .ok_or("Failed to read active browsing contexts")?;
+    let context = created["context"]
+        .as_str()
+        .ok_or("Firefox did not return a context id for the storage tab")?
+        .to_string();
+    ff.net.blank_contexts.write().await.insert(context.clone());
+    let result = read_origins_in(ff, &context, origins).await;
+    ff.net.blank_contexts.write().await.remove(&context);
+    let _ = ff
+        .bidi
+        .send("browsingContext.close", json!({"context": context}))
+        .await;
+    result
+}
+
+async fn read_origins_in(
+    ff: &FirefoxSession,
+    context: &str,
+    origins: &[String],
+) -> Result<Vec<OriginStorage>, String> {
+    let mut found = Vec::new();
+    for origin in origins {
+        if let Some(filter) = ff.net.domain_filter.read().await.as_ref() {
+            if filter.check_url(origin).is_err() {
+                continue;
+            }
+        }
+        ff.bidi
+            .send(
+                "browsingContext.navigate",
+                json!({"context": context, "url": format!("{origin}/"), "wait": "complete"}),
+            )
+            .await
+            .map_err(|e| format!("Failed to read storage for {origin}: {e}"))?;
+        let data = read_origin(ff, context).await?;
+        if data.origin == *origin && has_entries(&data) {
+            found.push(data);
+        }
+    }
+    Ok(found)
+}
+
+/// Collects storage from every open page and frame, then from each previously visited origin
+/// that is no longer open. Any read failure aborts so a partial result is never saved.
+async fn collect_origins(ff: &mut FirefoxSession) -> Result<Vec<OriginStorage>, String> {
+    let tree = ff.bidi.send("browsingContext.getTree", json!({})).await?;
+    let mut ids = Vec::new();
+    collect_context_ids(&tree["contexts"], &mut ids);
+    let mut read = HashSet::new();
     let mut seen = HashSet::new();
     let mut origins = Vec::new();
-    for context in contexts {
-        let Some(id) = context["context"].as_str() else {
+    for id in ids {
+        let origin = read_origin(ff, &id).await?;
+        if origin.origin == "null" || origin.origin.is_empty() {
             continue;
-        };
-        let Ok(data) = ff
-            .bidi
-            .call_function(id, ORIGIN_STORAGE_JS, None, Vec::new())
-            .await
-        else {
-            continue;
-        };
-        let Ok(origin) = serde_json::from_value::<OriginStorage>(data) else {
-            continue;
-        };
-        let has_entries = !origin.local_storage.is_empty() || !origin.session_storage.is_empty();
-        if has_entries && origin.origin != "null" && seen.insert(origin.origin.clone()) {
+        }
+        read.insert(origin.origin.clone());
+        if has_entries(&origin) && seen.insert(origin.origin.clone()) {
             origins.push(origin);
         }
+    }
+    let remaining: Vec<String> = ff
+        .visited_origins
+        .iter()
+        .filter(|o| o.starts_with("http") && !read.contains(*o))
+        .cloned()
+        .collect();
+    if !remaining.is_empty() {
+        origins.extend(collect_via_temp_context(ff, &remaining).await?);
     }
     Ok(origins)
 }
 
-async fn collect_state(ff: &FirefoxSession) -> Result<StorageState, String> {
+async fn collect_state(ff: &mut FirefoxSession) -> Result<StorageState, String> {
     let cookies = get_all_cookies(ff).await?;
     let origins = collect_origins(ff).await?;
     Ok(StorageState { cookies, origins })
 }
 
-async fn write_state_to(ff: &FirefoxSession, path: &str) -> Result<String, String> {
+async fn write_state_to(ff: &mut FirefoxSession, path: &str) -> Result<String, String> {
     let state = collect_state(ff).await?;
     let json = serde_json::to_string_pretty(&state)
         .map_err(|e| format!("Failed to serialize state: {e}"))?;
@@ -418,9 +495,10 @@ pub async fn state_save(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
     Ok(json!({ "saved": true, "path": saved_path }))
 }
 
-/// Saves the `--session-name` state file used by restore-on-close/autosave.
+/// Saves the `--session-name` state file used by restore-on-close/autosave. A complete candidate
+/// is validated and then swapped in, so a failed save never damages the last good file.
 pub async fn save_auto_state(
-    ff: &FirefoxSession,
+    ff: &mut FirefoxSession,
     session_name: &str,
     session_id: &str,
 ) -> Result<String, String> {
@@ -460,7 +538,7 @@ pub async fn load_state_path(ff: &mut FirefoxSession, path: &str) -> Result<Vec<
     let context = ff.context.clone();
     let mut skipped = Vec::new();
     for origin in &state.origins {
-        if origin.local_storage.is_empty() && origin.session_storage.is_empty() {
+        if !has_entries(origin) {
             continue;
         }
         let nav_url = format!("{}/", origin.origin.trim_end_matches('/'));
@@ -471,6 +549,7 @@ pub async fn load_state_path(ff: &mut FirefoxSession, path: &str) -> Result<Vec<
             )
             .await?;
         ff.refs.clear();
+        ff.note_visit(&nav_url);
 
         let payload = serde_json::to_string(origin).map_err(|e| e.to_string())?;
         let restored = ff

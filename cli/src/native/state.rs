@@ -418,6 +418,7 @@ pub(crate) fn auto_state_paths(
     Ok((candidate_path, final_path))
 }
 
+/// Validates a fully written candidate state file, then swaps it in for the last good file, rolling back on failure.
 pub(crate) fn promote_auto_state_candidate(
     candidate_path: &str,
     final_path: &Path,
