@@ -6,11 +6,12 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::{self, error::TryRecvError};
 
-use super::bidi::{remote_to_json, BidiClient};
+use super::client::{remote_to_json, BidiClient};
 use super::emulation::{self, Settings as EmulationSettings};
+use super::firefox::{check_firefox_version, find_firefox, DevtoolsEndpoint, FirefoxProcess};
+use super::firefox_devtools::RdpClient;
 use super::network::{AbortOnDrop, NetContext, NETWORK_EVENTS};
-use super::process::{check_firefox_version, find_firefox, DevtoolsEndpoint, FirefoxProcess};
-use super::rdp::RdpClient;
+use super::types::UserPromptOpened;
 use crate::native::actions::{EmulatedMedia, PendingDialog};
 use crate::native::cdp::chrome::LaunchOptions;
 
@@ -360,20 +361,20 @@ fn apply_event(
             }
         }
         Some("browsingContext.userPromptOpened") if p["handler"] != "accept" => {
-            let context = p["context"].as_str();
+            let prompt: UserPromptOpened = serde_json::from_value(p.clone()).unwrap_or_default();
             *dialog = Some(PendingDialog {
-                dialog_type: p["type"].as_str().unwrap_or("alert").to_string(),
-                message: p["message"].as_str().unwrap_or("").to_string(),
+                dialog_type: prompt.kind.unwrap_or_else(|| "alert".to_string()),
+                message: prompt.message,
                 url: String::new(),
-                default_prompt: p["defaultValue"].as_str().map(String::from),
-                session_id: context.map(String::from),
-                owner_context: context.and_then(|context| {
+                default_prompt: prompt.default_value,
+                owner_context: prompt.context.as_deref().and_then(|context| {
                     let mut owner = context;
                     while let Some(parent) = context_parents.get(owner) {
                         owner = parent;
                     }
                     tab_ids.contains_key(owner).then(|| owner.to_string())
                 }),
+                session_id: prompt.context,
             });
         }
         Some("browsingContext.userPromptClosed")

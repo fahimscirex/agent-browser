@@ -411,7 +411,7 @@ pub async fn upload(cmd: &Value, state: &mut DaemonState) -> Result<Value, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native::firefox::session::tests::{fake_session, fake_session_with, Calls};
+    use crate::native::bidi::session::tests::{fake_session, fake_session_with, Calls};
 
     fn state_with(ff: FirefoxSession) -> DaemonState {
         let mut state = DaemonState::new();
