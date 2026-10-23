@@ -614,7 +614,6 @@ pub(crate) mod tests {
             documents: HashMap::new(),
             tab_labels: HashMap::new(),
             touches: Vec::new(),
-            shadow_ids: Default::default(),
             emulation: EmulationSettings::default(),
             events,
             net: NetContext::default(),
