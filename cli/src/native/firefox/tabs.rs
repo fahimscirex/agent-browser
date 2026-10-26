@@ -188,7 +188,7 @@ pub async fn tab_close(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     if state
         .pending_dialog
         .as_ref()
-        .and_then(|d| d.session_id.as_deref())
+        .and_then(|d| d.owner_context.as_deref().or(d.session_id.as_deref()))
         == Some(context.as_str())
     {
         state.pending_dialog = None;

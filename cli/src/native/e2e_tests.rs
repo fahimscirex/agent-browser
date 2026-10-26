@@ -14817,6 +14817,43 @@ async fn e2e_firefox_frame_dialog() {
 
 #[tokio::test]
 #[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_frame_dialog_does_not_block_new_tab() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &fixture.url).await;
+    let owner_context = state.firefox.as_ref().unwrap().top_context.clone();
+
+    let ask = firefox_ref(&mut state, "Frame ask").await;
+    let resp = firefox_act(&mut state, "click", &ask, json!({})).await;
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["dialogOpened"], true, "{resp}");
+
+    let resp = firefox_command(&mut state, json!({ "id": "new", "action": "tab_new" })).await;
+    assert_success(&resp);
+    let dialog = state.pending_dialog.as_ref().unwrap();
+    assert_ne!(dialog.session_id.as_deref(), Some(owner_context.as_str()));
+    assert_eq!(
+        dialog.owner_context.as_deref(),
+        Some(owner_context.as_str())
+    );
+    assert_eq!(firefox_eval(&mut state, "1 + 1").await, json!(2));
+
+    let resp = firefox_command(
+        &mut state,
+        json!({ "id": "dismiss", "action": "dialog", "response": "dismiss" }),
+    )
+    .await;
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["accepted"], false, "{resp}");
+    firefox_close(&mut state).await;
+}
+
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
 async fn e2e_firefox_screenshot_annotate_excludes_iframe_overlays() {
     required_firefox_binary();
     let tmp = tempfile::tempdir().unwrap();

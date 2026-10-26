@@ -213,6 +213,7 @@ pub struct PendingDialog {
     /// Flat CDP session the dialog opened on. A dialog on a background tab
     /// must not block commands targeting the active tab.
     pub session_id: Option<String>,
+    pub owner_context: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2305,6 +2306,7 @@ impl DaemonState {
                                         url: dialog_event.url,
                                         default_prompt: dialog_event.default_prompt,
                                         session_id: event.session_id.clone(),
+                                        owner_context: None,
                                     });
                                 }
                             }
@@ -15483,6 +15485,7 @@ mod tests {
             url: "https://example.com".to_string(),
             default_prompt: None,
             session_id: None,
+            owner_context: None,
         });
         assert!(!autosave_due(&state, 30_000));
     }
@@ -19598,6 +19601,7 @@ mod firefox_routing_tests {
             dialog_type: "confirm".into(),
             message: "sure?".into(),
             session_id: Some("ctx-background".into()),
+            owner_context: Some("ctx-background".into()),
             ..Default::default()
         });
         let nav = json!({"id":"1","action":"navigate","url":"https://a.test"});
@@ -19605,7 +19609,9 @@ mod firefox_routing_tests {
         assert_eq!(resp["success"], true, "{resp}");
         assert_eq!(navigations(&calls), 1);
 
-        state.pending_dialog.as_mut().unwrap().session_id = Some("ctx-active".into());
+        let dialog = state.pending_dialog.as_mut().unwrap();
+        dialog.session_id = Some("ctx-active".into());
+        dialog.owner_context = Some("ctx-active".into());
         let resp = execute_command(&nav, &mut state).await;
         assert_eq!(resp["success"], false);
         assert!(resp["error"]

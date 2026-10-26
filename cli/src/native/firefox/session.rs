@@ -16,7 +16,9 @@ use crate::native::cdp::chrome::LaunchOptions;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const DEVTOOLS_CONNECT_WINDOW: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
-const SUBSCRIBED_EVENTS: [&str; 2] = [
+const SUBSCRIBED_EVENTS: [&str; 4] = [
+    "browsingContext.contextCreated",
+    "browsingContext.contextDestroyed",
     "browsingContext.userPromptOpened",
     "browsingContext.userPromptClosed",
 ];
@@ -33,6 +35,7 @@ pub struct FirefoxSession {
     pub top_context: String,
     /// Stable `t<N>` ids keyed by BiDi context; assigned on first sight and never reused.
     pub tab_ids: HashMap<String, u32>,
+    context_parents: HashMap<String, String>,
     next_tab_id: u32,
     /// Durable ref ids keyed by `(context, sharedId)`; reset when a document changes.
     pub refs: HashMap<(String, String), i64>,
@@ -158,6 +161,7 @@ impl FirefoxSession {
             rdp,
             accessibility_actor,
             tab_ids: HashMap::from([(context.clone(), 1)]),
+            context_parents: HashMap::new(),
             next_tab_id: 2,
             top_context: context.clone(),
             context,
@@ -202,7 +206,7 @@ impl FirefoxSession {
     pub fn drain_events(&mut self, dialog: &mut Option<PendingDialog>) {
         loop {
             match self.events.try_recv() {
-                Ok(e) => apply_event(&e, dialog),
+                Ok(e) => apply_event(&e, dialog, &mut self.context_parents, &self.tab_ids),
                 Err(TryRecvError::Lagged(_)) => continue,
                 Err(_) => break,
             }
@@ -282,16 +286,39 @@ impl FirefoxSession {
     }
 }
 
-fn apply_event(e: &Value, dialog: &mut Option<PendingDialog>) {
+fn apply_event(
+    e: &Value,
+    dialog: &mut Option<PendingDialog>,
+    context_parents: &mut HashMap<String, String>,
+    tab_ids: &HashMap<String, u32>,
+) {
     let p = &e["params"];
     match e["method"].as_str() {
+        Some("browsingContext.contextCreated") => {
+            if let (Some(context), Some(parent)) = (p["context"].as_str(), p["parent"].as_str()) {
+                context_parents.insert(context.to_string(), parent.to_string());
+            }
+        }
+        Some("browsingContext.contextDestroyed") => {
+            if let Some(context) = p["context"].as_str() {
+                context_parents.remove(context);
+            }
+        }
         Some("browsingContext.userPromptOpened") if p["handler"] != "accept" => {
+            let context = p["context"].as_str();
             *dialog = Some(PendingDialog {
                 dialog_type: p["type"].as_str().unwrap_or("alert").to_string(),
                 message: p["message"].as_str().unwrap_or("").to_string(),
                 url: String::new(),
                 default_prompt: p["defaultValue"].as_str().map(String::from),
-                session_id: p["context"].as_str().map(String::from),
+                session_id: context.map(String::from),
+                owner_context: context.and_then(|context| {
+                    let mut owner = context;
+                    while let Some(parent) = context_parents.get(owner) {
+                        owner = parent;
+                    }
+                    tab_ids.contains_key(owner).then(|| owner.to_string())
+                }),
             });
         }
         Some("browsingContext.userPromptClosed")
@@ -392,6 +419,7 @@ pub(crate) mod tests {
             accessibility_actor: "acc".into(),
             context: "ctx-active".into(),
             tab_ids: HashMap::from([("ctx-active".into(), 1)]),
+            context_parents: HashMap::new(),
             next_tab_id: 2,
             top_context: "ctx-active".into(),
             refs: HashMap::new(),
@@ -430,15 +458,22 @@ pub(crate) mod tests {
     #[test]
     fn prompt_events_set_and_clear_the_dialog() {
         let mut d = None;
-        let open = json!({"method":"browsingContext.userPromptOpened","params":{"context":"c1","type":"confirm","message":"sure?"}});
-        apply_event(&open, &mut d);
+        let mut context_parents = HashMap::new();
+        let tab_ids = HashMap::from([("top".into(), 1)]);
+        let frame = json!({"method":"browsingContext.contextCreated","params":{"context":"frame","parent":"top"}});
+        apply_event(&frame, &mut d, &mut context_parents, &tab_ids);
+        let open = json!({"method":"browsingContext.userPromptOpened","params":{"context":"frame","type":"confirm","message":"sure?"}});
+        apply_event(&open, &mut d, &mut context_parents, &tab_ids);
         assert_eq!(d.as_ref().unwrap().dialog_type, "confirm");
-        assert_eq!(d.as_ref().unwrap().session_id.as_deref(), Some("c1"));
-        let other = json!({"method":"browsingContext.userPromptClosed","params":{"context":"c2"}});
-        apply_event(&other, &mut d);
+        assert_eq!(d.as_ref().unwrap().session_id.as_deref(), Some("frame"));
+        assert_eq!(d.as_ref().unwrap().owner_context.as_deref(), Some("top"));
+        let other =
+            json!({"method":"browsingContext.userPromptClosed","params":{"context":"other"}});
+        apply_event(&other, &mut d, &mut context_parents, &tab_ids);
         assert!(d.is_some());
-        let close = json!({"method":"browsingContext.userPromptClosed","params":{"context":"c1"}});
-        apply_event(&close, &mut d);
+        let close =
+            json!({"method":"browsingContext.userPromptClosed","params":{"context":"frame"}});
+        apply_event(&close, &mut d, &mut context_parents, &tab_ids);
         assert!(d.is_none());
     }
 
