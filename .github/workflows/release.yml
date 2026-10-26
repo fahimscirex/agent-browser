@@ -24,6 +24,7 @@ jobs:
       should_publish_eve: ${{ steps.check.outputs.should_publish_eve }}
       needs_github_release: ${{ steps.check.outputs.needs_github_release }}
       version: ${{ steps.check.outputs.version }}
+      eve_version: ${{ steps.check.outputs.eve_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -45,7 +46,7 @@ jobs:
 
           NPM_VERSION=$(npm view agent-browser version 2>/dev/null || echo "0.0.0")
           SANDBOX_NPM_VERSION=$(npm view @agent-browser/sandbox version 2>/dev/null || echo "0.0.0")
-          EVE_NPM_VERSION=$(npm view @agent-browser/eve version 2>/dev/null || echo "0.0.0")
+          EVE_NPM_VERSION=$(npm view "@agent-browser/eve@$EVE_VERSION" version 2>/dev/null || echo "0.0.0")
           echo "npm version: $NPM_VERSION"
           echo "@agent-browser/sandbox npm version: $SANDBOX_NPM_VERSION"
           echo "@agent-browser/eve npm version: $EVE_NPM_VERSION"
@@ -84,6 +85,7 @@ jobs:
             echo "should_publish_eve=false" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "eve_version=$EVE_VERSION" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -271,6 +273,9 @@ jobs:
       - name: Sync version
         run: pnpm run version:sync
 
+      - name: Check version and prerelease publication policy
+        run: node scripts/check-version-sync.js
+
       - name: Download all binary artifacts
         if: needs.check-release.outputs.should_release == 'true'
         uses: actions/download-artifact@v4
@@ -353,13 +358,14 @@ jobs:
         working-directory: packages/@agent-browser/eve
         env:
           PACKAGE_NAME: '@agent-browser/eve'
-          VERSION: ${{ needs.check-release.outputs.version }}
+          VERSION: ${{ needs.check-release.outputs.eve_version }}
         run: |
           set -euo pipefail
+          PUBLISH_TAG=$(node -p "require('./package.json').publishConfig?.tag ?? 'latest'")
           if pnpm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
             echo "${PACKAGE_NAME}@${VERSION} is already published; skipping"
           else
-            pnpm publish --provenance --access public --no-git-checks
+            pnpm publish --provenance --access public --no-git-checks --tag "$PUBLISH_TAG"
           fi
 
   github-release:

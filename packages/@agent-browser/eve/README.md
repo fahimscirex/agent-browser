@@ -6,11 +6,15 @@ Mount it once and the agent gets ~20 namespaced tools — navigation, accessibil
 
 ## Install
 
+For the stable, format-2 extension used with older eve:
+
 ```bash
-npm install @agent-browser/eve
+pnpm add @agent-browser/eve@^0.39.4
 ```
 
-`eve` is a peer dependency; the extension runs on the eve installed in your app.
+The new-eve distribution is being prepared as `0.40.0-next.0` on the opt-in `next` tag. Once published, install it explicitly with `pnpm add @agent-browser/eve@next`. It requires eve's format-3 extension loader; the provisional peer floor is `>=0.84.0 <1.0.0` and must be confirmed against the actual eve npm release before publishing. Do not upgrade an older eve app to the `next` extension.
+
+`eve` is a peer dependency; the extension runs on the eve installed in your app. The generated manifest is an additional compatibility check, not something an npm peer range can override. Format 2 and format 3 are separate distributions, not a single build that loads on both generations.
 
 ## Mount
 
@@ -139,6 +143,16 @@ Each tool shells out to the `agent-browser` CLI inside the sandbox from `ctx.get
 ## Example
 
 See [`examples/eve`](https://github.com/vercel-labs/agent-browser/tree/main/examples/eve) for a complete Next.js eve app with this extension mounted.
+
+## Releasing the eve extension
+
+The eve extension has an independent version from the agent-browser CLI and sandbox. `pnpm version:sync` keeps its sandbox workspace dependency in sync but does not change its version, compiler dependency or publication tag. The sandbox helper still installs the CLI version matching `@agent-browser/sandbox`, not the independent extension version.
+
+Keep format-2 maintenance releases on `0.39.x`, built with the older eve compiler. This branch prepares the format-3 line as `0.40.0-next.0` with `publishConfig.tag: "next"`; publishing it must not move `latest`. Existing exact and caret `0.39.x` consumers do not resolve the `0.40` prerelease. The release workflow checks the extension's exact version on npm independently, so a published `next` version is not repeatedly treated as missing just because `latest` still points at `0.39.x`.
+
+Before merging this release preparation, confirm eve's actual format-3 npm version and adjust the peer floor if needed. Replace the temporary immutable compiler tarball with an exact released eve version, regenerate the lockfile, rebuild and verify the generated format-3 manifest. `builtWithEve` must remain the actual compiler version; do not rewrite it to broaden compatibility. The current development pin is an immutable snapshot of eve main, not an npm release.
+
+Promoting a stable `0.40.0` to `latest` is a separate, deliberate release decision: update both the package version and publication tag, document the eve upgrade requirement, and retain an older branch for any `0.39.x` fixes. Neither this PR nor a package version bump performs that promotion by itself.
 
 ## License
 

@@ -44,7 +44,7 @@ if (!sandboxVersionMatch) {
 
 const sandboxRuntimeVersion = sandboxVersionMatch[1];
 
-// Read Eve package version
+// The eve extension is versioned independently from the CLI/sandbox.
 const evePkg = JSON.parse(readFileSync(join(rootDir, 'packages/@agent-browser/eve/package.json'), 'utf-8'));
 const eveVersion = evePkg.version;
 const eveSandboxDependency = evePkg.dependencies?.['@agent-browser/sandbox'];
@@ -62,8 +62,8 @@ if (packageVersion !== sandboxVersion) {
 if (packageVersion !== sandboxRuntimeVersion) {
   mismatches.push(`  packages/@agent-browser/sandbox/src/version.ts: ${sandboxRuntimeVersion}`);
 }
-if (packageVersion !== eveVersion) {
-  mismatches.push(`  packages/@agent-browser/eve/package.json: ${eveVersion}`);
+if (eveVersion.includes('-') && (!evePkg.publishConfig?.tag || evePkg.publishConfig.tag === 'latest')) {
+  mismatches.push('  packages/@agent-browser/eve prereleases must use an explicit non-latest publishConfig.tag');
 }
 if (eveSandboxDependency !== 'workspace:^') {
   mismatches.push(`  packages/@agent-browser/eve dependency @agent-browser/sandbox: ${eveSandboxDependency}`);
@@ -78,4 +78,4 @@ if (mismatches.length > 0) {
   process.exit(1);
 }
 
-console.log(`Versions are in sync: ${packageVersion}`);
+console.log(`Versions are in sync: ${packageVersion}; independent eve extension: ${eveVersion}`);

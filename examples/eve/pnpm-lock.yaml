@@ -11,8 +11,8 @@ importers:
   .:
     dependencies:
       '@agent-browser/eve':
-        specifier: link:../../packages/@agent-browser/eve
-        version: link:../../packages/@agent-browser/eve
+        specifier: 0.39.4
+        version: 0.39.4(eve@0.57.0(ai@7.0.102(zod@4.4.3)))
       '@radix-ui/react-use-controllable-state':
         specifier: 1.2.2
         version: 1.2.2(@types/react@19.2.15)(react@19.2.6)
@@ -112,6 +112,20 @@ importers:
         version: 6.0.3
 
 packages:
+
+  '@agent-browser/eve@0.39.4':
+    resolution: {integrity: sha512-k37hGMbcDwMcsxfVoqUHP1se/OC4CPohngGOQatkjZhd6ygzdDNwf877yil8URT1tZIPoCt0HHuRqoJ2s95DhA==}
+    engines: {node: '>=24.0.0'}
+    peerDependencies:
+      eve: '>=0.81.0'
+
+  '@agent-browser/sandbox@0.39.4':
+    resolution: {integrity: sha512-/6cNrwFMmjjpQ7WlLTFCLrlFshwBYfzhT3Ki0RzFvE8bngt+bDROCxA4QQcAOHlLg35dNw55XxyWKWKaq8fuZQ==}
+    peerDependencies:
+      '@vercel/sandbox': '>=1.0.0'
+    peerDependenciesMeta:
+      '@vercel/sandbox':
+        optional: true
 
   '@ai-sdk/gateway@4.0.82':
     resolution: {integrity: sha512-WbRChvbJY2zf0qBxFu6UENi0p69fPzP7lKViNTIp3gr76w9bLUFvV5fTXS5uGPqDOkzlTIuAkqWxYNayEBSn6Q==}
@@ -2976,6 +2990,16 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@agent-browser/eve@0.39.4(eve@0.57.0(ai@7.0.102(zod@4.4.3)))':
+    dependencies:
+      '@agent-browser/sandbox': 0.39.4
+      eve: 0.57.0(ai@7.0.102(zod@4.4.3))
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@vercel/sandbox'
+
+  '@agent-browser/sandbox@0.39.4': {}
 
   '@ai-sdk/gateway@4.0.82(zod@4.4.3)':
     dependencies:

@@ -1480,6 +1480,8 @@ Fresh Vercel and eve sandboxes install Chromium system dependencies by default. 
 
 ### eve extension
 
+The stable `@agent-browser/eve@0.39.x` line uses eve's older format-2 manifest. A separate `0.40.0-next.0` release is being prepared for the new format-3 loader under the opt-in `next` tag; it does not replace `latest`. See the [package compatibility and release guide](packages/@agent-browser/eve/README.md#install) before upgrading, especially while eve's matching npm release is pending.
+
 Give an [eve](https://eve.dev) agent the full browser tool set by mounting the [`@agent-browser/eve`](packages/@agent-browser/eve/) extension:
 
 ```typescript
