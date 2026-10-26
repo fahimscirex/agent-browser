@@ -491,7 +491,15 @@ fn launch_engine(
             cmd.get("autoConnect").and_then(Value::as_bool) == Some(true),
             cmd.get("provider").and_then(Value::as_str),
         );
-        let same_target = AttachedTarget::named_by(cmd).as_ref() == attached_target;
+        let same_target = match (attached_target, AttachedTarget::named_by(cmd)) {
+            (Some(AttachedTarget::Firefox(attached)), Some(AttachedTarget::CdpUrl(named))) => {
+                attached == &named
+            }
+            (Some(AttachedTarget::Firefox(attached)), Some(AttachedTarget::CdpPort(named))) => {
+                attached == &named.to_string()
+            }
+            (attached, named) => named.as_ref() == attached,
+        };
         active
             .filter(|engine| !engine.eq_ignore_ascii_case("chrome") && (!external || same_target))
             .map(str::to_string)
@@ -18845,6 +18853,7 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"browser":{"cd
     fn test_launch_engine_inherits_only_for_local_or_same_target() {
         let attached = AttachedTarget::CdpPort(9222);
         let cdp = |port| json!({"cdpPort": port});
+        let firefox = AttachedTarget::Firefox("http://127.0.0.1:4444".into());
         let cases = [
             (
                 json!({}),
@@ -18902,6 +18911,22 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"browser":{"cd
                 Some("firefox"),
                 Some("firefox"),
                 Some("firefox"),
+            ),
+            (
+                json!({"cdpUrl": "http://127.0.0.1:4444"}),
+                Some(&firefox),
+                None,
+                None,
+                Some("firefox"),
+                Some("firefox"),
+            ),
+            (
+                json!({"cdpUrl": "http://127.0.0.1:5555"}),
+                Some(&firefox),
+                None,
+                None,
+                Some("firefox"),
+                None,
             ),
         ];
 

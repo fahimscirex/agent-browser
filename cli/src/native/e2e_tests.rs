@@ -14847,6 +14847,19 @@ async fn e2e_firefox_attach_to_running_firefox() {
 
     firefox_open(&mut state, &fixture.url).await;
     let name = firefox_ref(&mut state, "Name").await;
+    let active_title = firefox_title(&mut state).await;
+    let resp = firefox_command(
+        &mut state,
+        json!({ "id": "repeat-attach", "action": "launch", "cdpUrl": target }),
+    )
+    .await;
+    assert_success(&resp);
+    assert_eq!(
+        get_data(&resp)["reused"],
+        true,
+        "repeating the same Firefox target must reuse its live session: {resp}"
+    );
+    assert_eq!(firefox_title(&mut state).await, active_title);
     assert_success(&firefox_act(&mut state, "fill", &name, json!({ "value": "Ada" })).await);
     let go = firefox_ref(&mut state, "Go").await;
     assert_success(&firefox_act(&mut state, "click", &go, json!({})).await);
@@ -14860,8 +14873,8 @@ async fn e2e_firefox_attach_to_running_firefox() {
     assert_success(&resp);
     assert_eq!(
         get_data(&resp)["relaunchedBrowser"],
-        true,
-        "attaching again while the session is active must report a relaunch: {resp}"
+        false,
+        "attaching to the same target must reuse the active session: {resp}"
     );
     firefox_switch_to_title(&mut state, "Hello Ada").await;
 
