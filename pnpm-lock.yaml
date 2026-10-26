@@ -139,8 +139,8 @@ importers:
         specifier: 7.0.102
         version: 7.0.102(zod@4.4.3)
       eve:
-        specifier: https://pkg.eve.dev/69346ff631ef4dc20ae56e372578567aaf52b19f/eve.tgz
-        version: https://pkg.eve.dev/69346ff631ef4dc20ae56e372578567aaf52b19f/eve.tgz(@opentelemetry/api@1.9.0)(ai@7.0.102(zod@4.4.3))(next@16.3.4(patch_hash=a620718f9d934500c4f0364aa9312b2539559e0ac911cdc37c97b92e1e9b4550)(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
+        specifier: 0.84.0
+        version: 0.84.0(@opentelemetry/api@1.9.0)(ai@7.0.102(zod@4.4.3))(next@16.3.4(patch_hash=a620718f9d934500c4f0364aa9312b2539559e0ac911cdc37c97b92e1e9b4550)(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -4615,9 +4615,8 @@ packages:
     resolution: {integrity: sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==}
     engines: {node: '>= 0.6'}
 
-  eve@https://pkg.eve.dev/69346ff631ef4dc20ae56e372578567aaf52b19f/eve.tgz:
-    resolution: {integrity: sha512-ZfpommRyus5+/8az/rc15tDCDWhusQFTjctypB1nH1x2NsU95AR7dsO2VBj9HXRk9fzn4WwgLFoDXWdEygmTcQ==, tarball: https://pkg.eve.dev/69346ff631ef4dc20ae56e372578567aaf52b19f/eve.tgz}
-    version: 0.83.3
+  eve@0.84.0:
+    resolution: {integrity: sha512-hZLIdqrDL67vFzOgm6gs2dIY9UmTbVmOkQ6JR8KXcN4ypGkFK7nmPXRAhCf1UzurWLZ2/d0RPI2LDYuiGvtDnA==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
@@ -11986,7 +11985,7 @@ snapshots:
 
   etag@1.8.1: {}
 
-  eve@https://pkg.eve.dev/69346ff631ef4dc20ae56e372578567aaf52b19f/eve.tgz(@opentelemetry/api@1.9.0)(ai@7.0.102(zod@4.4.3))(next@16.3.4(patch_hash=a620718f9d934500c4f0364aa9312b2539559e0ac911cdc37c97b92e1e9b4550)(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3):
+  eve@0.84.0(@opentelemetry/api@1.9.0)(ai@7.0.102(zod@4.4.3))(next@16.3.4(patch_hash=a620718f9d934500c4f0364aa9312b2539559e0ac911cdc37c97b92e1e9b4550)(@opentelemetry/api@1.9.0)(@types/node@24.13.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3):
     dependencies:
       ai: 7.0.102(zod@4.4.3)
       nitro: 3.0.260903-beta

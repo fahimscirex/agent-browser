@@ -47,6 +47,7 @@ test('CLI version sync preserves the independent eve version, tag and compiler p
   const file = 'packages/@agent-browser/eve/package.json';
   await editPackage(dir, file, (pkg) => {
     pkg.version = '0.40.0-next.42';
+    pkg.publishConfig.tag = 'next';
     pkg.dependencies['@agent-browser/sandbox'] = '^0.1.0';
   });
   const before = JSON.parse(await readFile(join(dir, file), 'utf8'));

@@ -6,13 +6,19 @@ Mount it once and the agent gets ~20 namespaced tools — navigation, accessibil
 
 ## Install
 
-For the stable, format-2 extension used with older eve:
+For eve 0.84.0 and later compatible 0.x releases, use the format-3 extension:
+
+```bash
+pnpm add @agent-browser/eve@^0.40.0
+```
+
+For older eve apps, stay on the format-2 line:
 
 ```bash
 pnpm add @agent-browser/eve@^0.39.4
 ```
 
-The new-eve distribution is being prepared as `0.40.0-next.0` on the opt-in `next` tag. Once published, install it explicitly with `pnpm add @agent-browser/eve@next`. It requires eve's format-3 extension loader; the provisional peer floor is `>=0.84.0 <1.0.0` and must be confirmed against the actual eve npm release before publishing. Do not upgrade an older eve app to the `next` extension.
+The `0.40.x` line requires `eve@>=0.84.0 <1.0.0`. Existing exact or caret `0.39.x` dependencies do not upgrade to `0.40.0`. Once `0.40.0` is published to `latest`, an unversioned install selects the new line; npm does not automatically choose an older extension based on the installed eve peer. Older eve users must keep the `0.39.x` range rather than explicitly installing `latest`.
 
 `eve` is a peer dependency; the extension runs on the eve installed in your app. The generated manifest is an additional compatibility check, not something an npm peer range can override. Format 2 and format 3 are separate distributions, not a single build that loads on both generations.
 
@@ -148,11 +154,11 @@ See [`examples/eve`](https://github.com/vercel-labs/agent-browser/tree/main/exam
 
 The eve extension has an independent version from the agent-browser CLI and sandbox. `pnpm version:sync` keeps its sandbox workspace dependency in sync but does not change its version, compiler dependency or publication tag. The sandbox helper still installs the CLI version matching `@agent-browser/sandbox`, not the independent extension version.
 
-Keep format-2 maintenance releases on `0.39.x`, built with the older eve compiler. This branch prepares the format-3 line as `0.40.0-next.0` with `publishConfig.tag: "next"`; publishing it must not move `latest`. Existing exact and caret `0.39.x` consumers do not resolve the `0.40` prerelease. The release workflow checks the extension's exact version on npm independently, so a published `next` version is not repeatedly treated as missing just because `latest` still points at `0.39.x`.
+`0.39.4` is the last format-2 release for older eve; no parallel maintenance line or legacy tag is required. The format-3 distribution starts at `0.40.0`, built with exact npm release `eve@0.84.0` and configured for `latest`. Existing exact and caret `0.39.x` consumers stay on the old release. Any future backport would be a separate decision, not a commitment to ongoing `0.39.x` releases.
 
-Before merging this release preparation, confirm eve's actual format-3 npm version and adjust the peer floor if needed. Replace the temporary immutable compiler tarball with an exact released eve version, regenerate the lockfile, rebuild and verify the generated format-3 manifest. `builtWithEve` must remain the actual compiler version; do not rewrite it to broaden compatibility. The current development pin is an immutable snapshot of eve main, not an npm release.
+The release workflow checks and publishes the extension's own exact version independently of the CLI. Merging a release preparation into main can publish the package automatically and move its configured npm tag; review the version, peer range and `publishConfig.tag` before merging. Preparing a draft PR does not publish anything.
 
-Promoting a stable `0.40.0` to `latest` is a separate, deliberate release decision: update both the package version and publication tag, document the eve upgrade requirement, and retain an older branch for any `0.39.x` fixes. Neither this PR nor a package version bump performs that promotion by itself.
+Rebuild and verify the generated manifest for every release. `builtWithEve` must remain the actual compiler version; do not rewrite it to broaden compatibility. Future prereleases must use an explicit non-`latest` tag such as `next`; both CI and the publication job check this policy. A stable release to `latest` is deliberate and does not provide automatic peer-aware version selection.
 
 ## License
 

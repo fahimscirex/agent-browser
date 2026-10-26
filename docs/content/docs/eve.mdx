@@ -7,13 +7,19 @@ navTitle: "eve Extension"
 
 ## Install
 
-For older eve apps using the format-2 extension loader, stay on the stable line:
+For eve 0.84.0 and later compatible 0.x releases, use the format-3 extension:
+
+```bash
+pnpm add @agent-browser/eve@^0.40.0
+```
+
+Older eve apps must stay on the format-2 line:
 
 ```bash
 pnpm add @agent-browser/eve@^0.39.4
 ```
 
-A separate `0.40.0-next.0` release is being prepared for eve's format-3 loader under the opt-in `next` tag. It does not replace `latest`; do not install it in an older eve app. Its provisional peer floor is `>=0.84.0 <1.0.0`, pending confirmation of the actual eve npm release. After the matching release is available and the extension is published, opt in with `pnpm add @agent-browser/eve@next`. The generated manifest enforces compatibility independently of npm peer resolution; no single distribution here supports both manifest formats.
+The `0.40.x` line requires `eve@>=0.84.0 <1.0.0`. Existing exact or caret `0.39.x` dependencies do not upgrade to `0.40.0`. Once the new extension is published to `latest`, an unversioned install selects that line; npm does not automatically fall back based on an older eve peer. The generated manifest enforces compatibility independently of npm peer resolution; no single distribution here supports both manifest formats.
 
 `eve` is a peer dependency and should already be present in an eve app. The sandbox preinstall helpers shown below ship with the same package, so no other install is needed.
 
