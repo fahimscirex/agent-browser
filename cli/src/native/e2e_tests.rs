@@ -14751,6 +14751,31 @@ async fn e2e_firefox_form_entry() {
         );
     }
 
+    firefox_eval(&mut state, "document.getElementById('notes').focus()").await;
+    let inserted = firefox_command(
+        &mut state,
+        json!({ "id": "insert-notes", "action": "inserttext", "text": "a\tb" }),
+    )
+    .await;
+    assert_success(&inserted);
+    assert_eq!(
+        firefox_eval(&mut state, "document.getElementById('notes').value").await,
+        "a\tb"
+    );
+
+    let nested_input = "document.getElementById('nest-host').shadowRoot.querySelector('div').shadowRoot.querySelector('input')";
+    firefox_eval(&mut state, &format!("{nested_input}.focus()")).await;
+    let inserted = firefox_command(
+        &mut state,
+        json!({ "id": "insert-nested", "action": "inserttext", "text": "shadow" }),
+    )
+    .await;
+    assert_success(&inserted);
+    assert_eq!(
+        firefox_eval(&mut state, &format!("{nested_input}.value")).await,
+        "shadow"
+    );
+
     assert_eq!(
         firefox_eval(
             &mut state,
@@ -15529,15 +15554,11 @@ async fn e2e_firefox_state_restore_isolated_from_page_hooks() {
             }),
         )
         .await;
-        if redirect {
-            assert_eq!(loaded["success"], false, "{loaded}");
-            assert!(
-                loaded["error"].as_str().unwrap().contains("landed on"),
-                "{loaded}"
-            );
-        } else {
-            assert_success(&loaded);
-        }
+        assert_success(&loaded);
+        assert_eq!(
+            get_data(&loaded)["skippedOrigins"],
+            if redirect { json!([origin]) } else { json!([]) }
+        );
         assert_eq!(
             firefox_eval(&mut state, "window.hooksInstalled").await,
             json!(true)

@@ -131,7 +131,7 @@ pub async fn dispatch_input(live: &FirefoxLive, msg_type: &str, msg: &Value) {
     if let Some(actions) = input_actions(msg_type, msg) {
         let _ = live
             .bidi
-            .send(
+            .send_no_wait(
                 "input.performActions",
                 json!({ "context": live.context, "actions": actions }),
             )

@@ -457,6 +457,27 @@ fn launch_connection_is_external(
     launch_connection_identity(cdp_url, cdp_port, auto_connect, provider_name).0 != "local"
 }
 
+fn launch_engine(
+    requested: Option<String>,
+    environment: Option<String>,
+    active: Option<&str>,
+    cmd: &Value,
+    attached_target: Option<&AttachedTarget>,
+) -> Option<String> {
+    requested.or(environment).or_else(|| {
+        let external = launch_connection_is_external(
+            cmd.get("cdpUrl").and_then(Value::as_str),
+            cmd.get("cdpPort").and_then(Value::as_u64),
+            cmd.get("autoConnect").and_then(Value::as_bool) == Some(true),
+            cmd.get("provider").and_then(Value::as_str),
+        );
+        let same_target = AttachedTarget::named_by(cmd).as_ref() == attached_target;
+        active
+            .filter(|engine| !engine.eq_ignore_ascii_case("chrome") && (!external || same_target))
+            .map(str::to_string)
+    })
+}
+
 fn validate_ca_cert_launch_mode(
     options: &LaunchOptions,
     engine: Option<&str>,
@@ -5451,12 +5472,13 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
         });
     let storage_state = cmd.get("storageState").and_then(|v| v.as_str());
     let storage_state_owned = storage_state.map(|s| s.to_string());
-    let engine = cmd
-        .get("engine")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| env::var("AGENT_BROWSER_ENGINE").ok())
-        .or_else(|| has_active_browser_session(state).then(|| state.engine.clone()));
+    let engine = launch_engine(
+        cmd.get("engine").and_then(Value::as_str).map(String::from),
+        env::var("AGENT_BROWSER_ENGINE").ok(),
+        has_active_browser_session(state).then_some(state.engine.as_str()),
+        cmd,
+        state.attached_target.as_ref(),
+    );
     let profile = cmd
         .get("profile")
         .and_then(|v| v.as_str())
@@ -18631,6 +18653,85 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"browser":{"cd
             false,
             Some("browserbase")
         ));
+    }
+
+    #[test]
+    fn test_launch_engine_inherits_only_for_local_or_same_target() {
+        let attached = AttachedTarget::CdpPort(9222);
+        let cdp = |port| json!({"cdpPort": port});
+        let cases = [
+            (
+                json!({}),
+                None,
+                None,
+                None,
+                Some("firefox"),
+                Some("firefox"),
+            ),
+            (json!({}), None, None, None, Some("chrome"), None),
+            (
+                cdp(9333),
+                Some(&attached),
+                None,
+                None,
+                Some("firefox"),
+                None,
+            ),
+            (
+                cdp(9222),
+                Some(&attached),
+                None,
+                None,
+                Some("firefox"),
+                Some("firefox"),
+            ),
+            (
+                json!({"provider": "browserbase"}),
+                Some(&attached),
+                None,
+                None,
+                Some("firefox"),
+                None,
+            ),
+            (
+                json!({"autoConnect": true}),
+                Some(&attached),
+                None,
+                None,
+                Some("firefox"),
+                None,
+            ),
+            (
+                cdp(9333),
+                Some(&attached),
+                Some("firefox"),
+                None,
+                Some("firefox"),
+                Some("firefox"),
+            ),
+            (
+                cdp(9333),
+                Some(&attached),
+                None,
+                Some("firefox"),
+                Some("firefox"),
+                Some("firefox"),
+            ),
+        ];
+
+        for (cmd, target, requested, environment, active, expected) in cases {
+            assert_eq!(
+                launch_engine(
+                    requested.map(String::from),
+                    environment.map(String::from),
+                    active,
+                    &cmd,
+                    target,
+                )
+                .as_deref(),
+                expected
+            );
+        }
     }
 
     #[test]

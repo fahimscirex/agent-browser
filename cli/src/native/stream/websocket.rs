@@ -864,18 +864,10 @@ mod tests {
         assert_eq!(parse_ack_seq(&json!({"type": "ack", "seq": "42"})), None);
     }
 
-    /// Guards the omit-never-null rule: a null string makes CDP reject the
-    /// whole command, which silently drops the keystroke.
-    /// A CDP endpoint that records every command and never replies, so a
-    /// dispatcher that waits for a response hangs on the first event.
-    async fn silent_cdp_server() -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
-        use futures_util::StreamExt;
-        let seen = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+    async fn silent_bidi_server() -> (String, Arc<Mutex<Vec<Value>>>) {
+        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "ws://127.0.0.1:{}/devtools/browser/silent",
-            listener.local_addr().unwrap().port()
-        );
+        let url = format!("ws://{}", listener.local_addr().unwrap());
         let recorded = seen.clone();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
@@ -883,70 +875,103 @@ mod tests {
             let (_tx, mut rx) = ws.split();
             while let Some(Ok(Message::Text(text))) = rx.next().await {
                 if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                    if let Some(m) = v.get("method").and_then(|m| m.as_str()) {
-                        recorded.lock().await.push(m.to_string());
-                    }
+                    recorded.lock().await.push(v);
                 }
             }
         });
         (url, seen)
     }
 
-    /// Guards the no-await dispatch, and unlike the e2e it runs on every PR.
-    ///
-    /// Regression: awaiting Chrome's reply per event serialized the reader, so a
-    /// click waited one round trip per queued move. Against a server that never
-    /// replies, the awaiting version cannot get past the first event at all.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_input_dispatch_does_not_wait_for_a_cdp_reply() {
-        let (url, seen) = silent_cdp_server().await;
-        let client = CdpClient::connect(&url).await.expect("mock cdp connect");
-
-        let events = [
-            (
-                "input_mouse",
-                json!({ "eventType": "mouseMoved", "x": 1, "y": 1 }),
-            ),
-            (
-                "input_mouse",
-                json!({ "eventType": "mousePressed", "x": 1, "y": 1 }),
-            ),
-            (
-                "input_keyboard",
-                json!({ "eventType": "keyDown", "key": "a", "text": "a" }),
-            ),
-        ];
-        let dispatched = tokio::time::timeout(Duration::from_secs(5), async {
-            for (kind, payload) in &events {
-                dispatch_input(kind, payload, &client, None).await;
-            }
-        })
-        .await;
-        assert!(
-            dispatched.is_ok(),
-            "dispatch blocked on a CDP reply that never comes"
+    async fn test_firefox_input_dispatch_does_not_wait_for_bidi_reply_or_block_ack() {
+        let (bidi_url, seen) = silent_bidi_server().await;
+        let bidi = Arc::new(
+            crate::native::bidi::client::BidiClient::connect(&bidi_url)
+                .await
+                .unwrap(),
         );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream_url = format!("ws://{}", listener.local_addr().unwrap());
+        let (ack, mut ack_rx) = watch::channel(0);
+        let (config, _) = watch::channel(ClientConfig::default());
+        let firefox_live = Arc::new(RwLock::new(Some(FirefoxLive {
+            bidi,
+            context: "ctx".to_string(),
+        })));
+        let reader_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (_, ws_rx) = ws.split();
+            reader_loop(
+                ws_rx,
+                Arc::new(RwLock::new(None)),
+                firefox_live,
+                Arc::new(RwLock::new(None)),
+                config,
+                ack,
+                Arc::new(IdleActivity::new()),
+            )
+            .await;
+        });
+        let (mut client, _) = tokio_tungstenite::connect_async(&stream_url).await.unwrap();
 
-        // The commands still reach CDP, in the order they were dispatched.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if seen.lock().await.len() >= 3 || tokio::time::Instant::now() > deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        for message in [
+            json!({"type": "input_mouse", "eventType": "mouseMoved", "x": 1, "y": 1}),
+            json!({"type": "input_mouse", "eventType": "mousePressed", "x": 1, "y": 1}),
+            json!({"type": "input_keyboard", "eventType": "keyDown", "key": "a"}),
+            json!({"type": "ack", "seq": 42}),
+        ] {
+            client
+                .send(Message::Text(message.to_string()))
+                .await
+                .unwrap();
         }
-        assert_eq!(
-            *seen.lock().await,
-            vec![
-                "Input.dispatchMouseEvent",
-                "Input.dispatchMouseEvent",
-                "Input.dispatchKeyEvent"
-            ],
-            "input should reach CDP in dispatch order"
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while *ack_rx.borrow_and_update() < 42 {
+                    ack_rx.changed().await.unwrap();
+                }
+            })
+            .await
+            .is_ok(),
+            "reader blocked on a BiDi reply before processing the ack"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if seen.lock().await.len() == 3 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .is_ok(),
+            "input commands did not reach BiDi"
         );
 
-        // Nothing was registered as awaiting a reply, so no orphan can accumulate.
-        assert_eq!(client.pending_len().await, 0);
+        let commands = seen.lock().await;
+        assert!(commands
+            .iter()
+            .all(|command| command["method"] == "input.performActions"));
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| { command["params"]["actions"][0]["actions"][0]["type"].as_str() })
+                .collect::<Vec<_>>(),
+            vec![Some("pointerMove"), Some("pointerMove"), Some("keyDown")]
+        );
+        assert_eq!(
+            commands[1]["params"]["actions"][0]["actions"][1]["type"],
+            "pointerDown"
+        );
+
+        client.send(Message::Close(None)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), reader_task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

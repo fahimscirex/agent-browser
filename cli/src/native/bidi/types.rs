@@ -183,15 +183,6 @@ pub struct Header {
     pub value: BytesValue,
 }
 
-impl Header {
-    pub fn string(name: String, value: String) -> Self {
-        Self {
-            name,
-            value: BytesValue::string(value),
-        }
-    }
-}
-
 /// The `request` member of `network.*` events.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]

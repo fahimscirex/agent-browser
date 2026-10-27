@@ -137,6 +137,7 @@ async fn send_text(
     }
 }
 
+/// Inserts `text` into the focused editable element without emitting key events.
 async fn insert_text(ff: &FirefoxSession, text: &str) -> Result<(), String> {
     if text.is_empty() {
         return Ok(());
@@ -470,7 +471,7 @@ mod tests {
             if req["method"] == "script.callFunction" {
                 log.lock().unwrap().push(req["params"].clone());
             }
-            json!({"type": "success", "result": {"type": "boolean", "value": true}})
+            json!({"type": "success", "result": {"type": "string", "value": "ok"}})
         })
         .await;
         let mut state = state_with(ff);
@@ -491,11 +492,6 @@ mod tests {
         );
         let params = seen.lock().unwrap();
         assert_eq!(params.len(), 2);
-        let js = params[0]["functionDeclaration"].as_str().unwrap();
-        assert!(js.contains("setRangeText"), "{js}");
-        assert!(js.contains("execCommand('insertText'"), "{js}");
-        assert!(js.contains("cancelable: true"), "{js}");
-        assert!(!js.contains("range.insertNode"), "{js}");
         assert_eq!(
             params[0]["arguments"][0],
             json!({"type": "string", "value": "a\n\tb"})

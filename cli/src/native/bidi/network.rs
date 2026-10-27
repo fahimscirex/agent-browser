@@ -176,7 +176,10 @@ fn header_object(headers: &[Header]) -> Value {
 fn bidi_headers(headers: Vec<(String, String)>) -> Vec<Header> {
     headers
         .into_iter()
-        .map(|(name, value)| Header::string(name, value))
+        .map(|(name, value)| Header {
+            name,
+            value: BytesValue::string(value),
+        })
         .collect()
 }
 

@@ -129,6 +129,21 @@ impl BidiClient {
         }
     }
 
+    /// Sends a command without registering a response waiter.
+    pub async fn send_no_wait(&self, method: &str, params: Value) -> Result<(), String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        if self.reader.is_finished() {
+            return Err("BiDi connection closed".to_string());
+        }
+        let body = json!({"id": id, "method": method, "params": params}).to_string();
+        self.sink
+            .lock()
+            .await
+            .send(Message::Text(body))
+            .await
+            .map_err(|e| format!("BiDi send failed: {e}"))
+    }
+
     /// Sends a command with serializable params and deserializes its `result`.
     pub async fn send_typed<P: Serialize, R: DeserializeOwned>(
         &self,
