@@ -22,10 +22,6 @@ fn require<'a>(cmd: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("Missing '{key}' parameter"))
 }
 
-fn node_ref(target: &Target) -> Value {
-    json!({ "sharedId": target.shared_id })
-}
-
 async fn run(
     ff: &FirefoxSession,
     target: &Target,
@@ -33,7 +29,7 @@ async fn run(
     args: Vec<Value>,
 ) -> Result<Value, String> {
     ff.bidi
-        .call_function(&target.context, js, Some(node_ref(target)), args)
+        .call_function(&target.context, js, Some(target.node_ref()), args)
         .await
 }
 
@@ -316,7 +312,7 @@ pub async fn upload(cmd: &Value, state: &mut DaemonState) -> Result<Value, Strin
     let ff = session(state)?;
     let params = json!({
         "context": target.context,
-        "element": node_ref(&target),
+        "element": target.node_ref(),
         "files": paths,
     });
     let _ = ff

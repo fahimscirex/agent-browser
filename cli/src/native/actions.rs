@@ -10682,7 +10682,7 @@ pub(crate) fn build_role_selector(role: &str, name: Option<&str>, exact: bool) -
 /// element's semantics, so Chrome prunes such elements from the AX tree
 /// entirely (divs, lists, imgs) or keeps them only as ignored nodes
 /// (tables). The accessibility tree can never answer a query for them.
-fn is_presentational_role(role: &str) -> bool {
+pub(crate) fn is_presentational_role(role: &str) -> bool {
     role.eq_ignore_ascii_case("none") || role.eq_ignore_ascii_case("presentation")
 }
 
@@ -10697,13 +10697,11 @@ fn is_presentational_role(role: &str) -> bool {
 /// precedence (aria-labelledby, then aria-label, then text content) with
 /// whitespace normalized; non-exact is a case-insensitive substring check,
 /// exact is a case-sensitive whole-name comparison.
-async fn handle_presentational_getbyrole(
-    cmd: &Value,
-    state: &mut DaemonState,
+pub(crate) fn build_presentational_role_locator_js(
     role: &str,
     name: Option<&str>,
     exact: bool,
-) -> Result<Value, String> {
+) -> String {
     let name_check = match name {
         Some(n) => {
             let name_json = serde_json::to_string(n).unwrap_or_default();
@@ -10724,7 +10722,7 @@ async fn handle_presentational_getbyrole(
     // later presentational token wrongly win.
     // A function of `root` (the document to search), so it can run against the
     // top document or a selected frame's document, not just the global one.
-    let locate_body = format!(
+    format!(
         r#"(root) => {{
             const VALID_ROLES = new Set(['alert','alertdialog','application','article','banner','blockquote','button','caption','cell','checkbox','code','columnheader','combobox','complementary','contentinfo','definition','deletion','dialog','directory','document','emphasis','feed','figure','form','generic','grid','gridcell','group','heading','img','insertion','link','list','listbox','listitem','log','main','mark','marquee','math','meter','menu','menubar','menuitem','menuitemcheckbox','menuitemradio','navigation','none','note','option','paragraph','presentation','progressbar','radio','radiogroup','region','row','rowgroup','rowheader','scrollbar','search','searchbox','separator','slider','spinbutton','status','strong','subscript','superscript','switch','tab','table','tablist','tabpanel','term','textbox','time','timer','toolbar','tooltip','tree','treegrid','treeitem']);
             const norm = s => (s || '').replace(/\s+/g, ' ').trim();
@@ -10756,11 +10754,23 @@ async fn handle_presentational_getbyrole(
                 // answer a query for none/presentation.
                 if (isPresentational && (isFocusable(el) || el.getAttributeNames().some(a => GLOBAL_ARIA.has(a)))) continue;
                 {name_check}
-                el.setAttribute('data-agent-browser-located', 'true');
-                return true;
+                return el;
             }}
-            return false;
+            return null;
         }}"#
+    )
+}
+
+async fn handle_presentational_getbyrole(
+    cmd: &Value,
+    state: &mut DaemonState,
+    role: &str,
+    name: Option<&str>,
+    exact: bool,
+) -> Result<Value, String> {
+    let locator = build_presentational_role_locator_js(role, name, exact);
+    let locate_body = format!(
+        "(root) => {{ const el = ({locator})(root); if (!el) return false; el.setAttribute('data-agent-browser-located', 'true'); return true; }}"
     );
 
     let located = {
@@ -10922,7 +10932,7 @@ async fn handle_getbyrole(cmd: &Value, state: &mut DaemonState) -> Result<Value,
 /// `img` and `document`); queries pass through the same table so both spellings
 /// match. `directory` is not mapped here (Chrome collapses it into `list`); it is
 /// matched on the DOM attribute instead, see handle_getbyrole.
-fn normalize_ax_role(role: &str) -> String {
+pub(crate) fn normalize_ax_role(role: &str) -> String {
     let lower = role.to_ascii_lowercase();
     match lower.as_str() {
         "image" => "img".to_string(),
@@ -10934,7 +10944,7 @@ fn normalize_ax_role(role: &str) -> String {
 /// Collapse internal whitespace runs to single spaces and trim, mirroring
 /// Playwright's accessible-name normalization: `"Save   changes"` and
 /// `"Save changes"` are the same accessible name.
-fn normalize_ws(s: &str) -> String {
+pub(crate) fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -10945,7 +10955,7 @@ fn normalize_ws(s: &str) -> String {
 /// exact matching is a case-sensitive whole-name comparison. Continues past AX
 /// nodes without a backendDOMNodeId (virtual nodes) so a later actionable match
 /// still wins.
-fn find_ax_node_by_role(
+pub(crate) fn find_ax_node_by_role(
     nodes: &[super::cdp::types::AXNode],
     role: &str,
     name: Option<&str>,

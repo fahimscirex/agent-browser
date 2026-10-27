@@ -14539,6 +14539,89 @@ async fn firefox_open(state: &mut DaemonState, url: &str) {
     assert_success(&resp);
 }
 
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_role_selector_semantics() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+
+    let html = concat!(
+        "<html><body>",
+        "<button>Save changes</button><button>Save</button>",
+        "<img alt='Brand' width='20' height='20' src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=' onclick='window.imageClicks++'>",
+        "<span role='mark none'>Wrong</span><span role='none mark'>Right</span>",
+        "<div id='not-select'>Not a select</div>",
+        "<script>window.imageClicks = 0</script>",
+        "</body></html>"
+    );
+    let url = format!("data:text/html;base64,{}", STANDARD.encode(html));
+    firefox_open(&mut state, &url).await;
+
+    for (id, name, exact, expected) in [
+        ("substring", "save", false, "Save changes"),
+        ("exact", "Save", true, "Save"),
+    ] {
+        let resp = firefox_command(
+            &mut state,
+            json!({
+                "id": id, "action": "getbyrole", "role": "button", "name": name,
+                "exact": exact, "subaction": "text"
+            }),
+        )
+        .await;
+        assert_success(&resp);
+        assert_eq!(get_data(&resp)["text"], expected);
+    }
+
+    for role in ["image", "img"] {
+        let resp = firefox_command(
+            &mut state,
+            json!({
+                "id": role, "action": "getbyrole", "role": role, "name": "Brand",
+                "exact": true, "subaction": "click"
+            }),
+        )
+        .await;
+        assert_success(&resp);
+    }
+    assert_eq!(
+        firefox_eval(&mut state, "window.imageClicks").await,
+        json!(2)
+    );
+
+    let resp = firefox_command(
+        &mut state,
+        json!({ "id": "presentational", "action": "getbyrole", "role": "none", "subaction": "text" }),
+    )
+    .await;
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["text"], "Right");
+
+    let resp = firefox_command(
+        &mut state,
+        json!({ "id": "select", "action": "select", "selector": "#not-select", "values": ["x"] }),
+    )
+    .await;
+    let error = resp["error"].as_str().unwrap_or("");
+    assert_eq!(resp["success"], false, "{resp}");
+    assert!(error.contains("not a <select>"), "{error}");
+
+    let resp = firefox_command(
+        &mut state,
+        json!({ "id": "xpath", "action": "getattribute", "selector": "xpath=[", "attribute": "id" }),
+    )
+    .await;
+    assert_eq!(resp["success"], false, "{resp}");
+    let error = resp["error"].as_str().unwrap_or("");
+    assert!(error.contains("xpath=["), "{error}");
+    assert!(!error.contains("XPath error"), "{error}");
+
+    firefox_close(&mut state).await;
+}
+
 async fn firefox_eval(state: &mut DaemonState, script: &str) -> Value {
     let resp = firefox_command(
         state,

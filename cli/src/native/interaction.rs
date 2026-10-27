@@ -472,6 +472,7 @@ pub async fn scroll(
 }
 
 pub(crate) const SELECT_OPTION_JS: &str = r#"function(vals) {
+            if (this.tagName !== 'SELECT') return { error: 'Element is not a <select>' };
             const normalize = (value) => String(value ?? '')
                 .replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '')
                 .replace(/\s+/g, ' ')

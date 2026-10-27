@@ -12,8 +12,8 @@ use crate::native::cdp::types::{AXNode, AXProperty, AXValue};
 use crate::native::element::RefMap;
 use crate::native::snapshot::{snapshot_from_ax_nodes, SnapshotOptions};
 
-const FRAME_TARGET_IDLE: Duration = Duration::from_millis(200);
 const PAINT_WAIT: Duration = Duration::from_millis(500);
+const SNAPSHOT_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Waits two animation frames so Firefox has applied pending DOM changes to its accessibility tree.
 const SETTLE_JS: &str =
@@ -166,7 +166,8 @@ async fn frame_actor(
     ff: &mut FirefoxSession,
     tab: &str,
     window: &str,
-) -> Result<Option<String>, String> {
+    deadline: tokio::time::Instant,
+) -> Result<String, String> {
     let rdp = ff.rdp.clone();
     let watch = ff.frames.get_or_insert_with(|| FrameWatch {
         events: rdp.subscribe(),
@@ -192,11 +193,20 @@ async fn frame_actor(
             record_target(&mut watch.actors, &e);
         }
         if let Some(actor) = watch.actors.get(window) {
-            return Ok(Some(actor.clone()));
+            return Ok(actor.clone());
         }
-        match tokio::time::timeout(FRAME_TARGET_IDLE, watch.events.recv()).await {
+        match tokio::time::timeout_at(deadline, watch.events.recv()).await {
             Ok(Ok(e)) => record_target(&mut watch.actors, &e),
-            _ => return Ok(None),
+            Ok(Err(error)) => {
+                return Err(format!(
+                    "Firefox did not announce frame target {window}: {error}"
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "Firefox did not announce frame target {window} before the snapshot deadline"
+                ));
+            }
         }
     }
 }
@@ -268,6 +278,7 @@ async fn annotate(
     context: &str,
     doc: &mut Value,
     tab: &str,
+    deadline: tokio::time::Instant,
 ) -> Result<(), String> {
     let arg = json!({"type": "string", "value": shape(doc).to_string()});
     let resolved = ff
@@ -295,27 +306,20 @@ async fn annotate(
     }
     for (path, window) in frames {
         if node_at(doc, &path)["useChildTargetToFetchChildren"] == true {
-            let Some(actor) = frame_actor(ff, tab, &window).await? else {
-                continue;
-            };
+            let actor = frame_actor(ff, tab, &window, deadline).await?;
             let frame = node_at(doc, &path);
             frame["children"] = json!([document_snapshot(&ff.rdp, &actor).await?]);
         }
         if let Some(child) = node_at(doc, &path)["children"].get_mut(0) {
-            Box::pin(annotate(ff, &window, child, tab)).await?;
+            Box::pin(annotate(ff, &window, child, tab, deadline)).await?;
         }
     }
     Ok(())
 }
 
-/// Renders the active tab as a Chrome-format snapshot, including iframes and open shadow roots.
-pub async fn take_snapshot(
-    ff: &mut FirefoxSession,
-    options: &SnapshotOptions,
-    ref_map: &mut RefMap,
-) -> Result<String, String> {
+pub(crate) async fn capture_tree(ff: &mut FirefoxSession, context: &str) -> Result<Value, String> {
+    let deadline = tokio::time::Instant::now() + SNAPSHOT_DEADLINE;
     let top = ff.top_context.clone();
-    let context = ff.context.clone();
     ff.bidi
         .send("browsingContext.activate", json!({"context": top}))
         .await?;
@@ -336,22 +340,31 @@ pub async fn take_snapshot(
         .as_str()
         .ok_or("Firefox DevTools returned no accessibility actor for the tab")?;
     let mut doc = document_snapshot(&ff.rdp, accessibility).await?;
-    Box::pin(annotate(ff, &top, &mut doc, &tab)).await?;
+    Box::pin(annotate(ff, &top, &mut doc, &tab, deadline)).await?;
+    if context == top {
+        return Ok(doc);
+    }
+    find_context_root(&doc, context)
+        .cloned()
+        .ok_or_else(|| "The selected frame is no longer in the page. Run frame again.".to_string())
+}
 
-    let frame_root = if context == top {
-        &doc
-    } else {
-        find_context_root(&doc, &context)
-            .ok_or("The selected frame is no longer in the page. Run frame again.")?
-    };
+/// Renders the active tab as a Chrome-format snapshot, including iframes and open shadow roots.
+pub async fn take_snapshot(
+    ff: &mut FirefoxSession,
+    options: &SnapshotOptions,
+    ref_map: &mut RefMap,
+) -> Result<String, String> {
+    let context = ff.context.clone();
+    let frame_root = capture_tree(ff, &context).await?;
     let root = match &options.selector {
-        None => frame_root,
+        None => &frame_root,
         Some(selector) => {
             let shared_id = find_element(ff, &context, selector)
                 .await
                 .map_err(|e| format!("Invalid selector '{selector}': {e}"))?
                 .ok_or_else(|| format!("Selector '{selector}' did not match any element"))?;
-            find_node(frame_root, &context, &shared_id)
+            find_node(&frame_root, &context, &shared_id)
                 .ok_or_else(|| format!("No accessibility node found for selector '{selector}'"))?
         }
     };
@@ -420,7 +433,7 @@ mod tests {
     use super::*;
     use crate::native::element::RefMap;
     use crate::native::snapshot::{snapshot_from_ax_nodes, SnapshotOptions};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     fn leaf(role: &str, name: &str, sel: &str, states: &[&str]) -> Value {
         json!({"role": role, "name": name, "nodeCssSelector": sel, "states": states, "children": []})
@@ -428,6 +441,28 @@ mod tests {
 
     fn page(children: Vec<Value>) -> Value {
         json!({"role": "document", "name": "", "nodeCssSelector": "", "states": [], "children": children})
+    }
+
+    #[tokio::test]
+    async fn missing_frame_actor_fails_before_snapshot_returns_partial_tree() {
+        let (mut ff, _, _) = crate::native::firefox::session::tests::fake_session().await;
+        ff.frames = Some(FrameWatch {
+            events: ff.rdp.subscribe(),
+            actors: HashMap::new(),
+            tabs: HashSet::from(["tab".to_string()]),
+        });
+
+        let error = frame_actor(
+            &mut ff,
+            "tab",
+            "child-context",
+            tokio::time::Instant::now() + Duration::from_millis(5),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("child-context"), "{error}");
+        assert!(error.contains("snapshot deadline"), "{error}");
     }
 
     fn render_with(root: &Value, ref_map: &mut RefMap, ids: &mut HashMap<String, i64>) -> String {

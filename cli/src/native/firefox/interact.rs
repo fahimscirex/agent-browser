@@ -17,10 +17,6 @@ use crate::native::interaction::{
     dispatch_event_js, CLICK_HREF_JS, FOCUS_JS, HIGHLIGHT_JS, SCROLL_BY_JS, SCROLL_INTO_VIEW_JS,
 };
 
-fn node(target: &Target) -> Value {
-    json!({ "sharedId": target.shared_id })
-}
-
 /// Scrolls `this` into view, then reports its center plus Chrome's actionability and blocker verdicts.
 fn prepare_js() -> String {
     format!(
@@ -56,7 +52,7 @@ async fn prepare(
         .call_function(
             &target.context,
             &prepare_js(),
-            Some(node(target)),
+            Some(target.node_ref()),
             Vec::new(),
         )
         .await?;
@@ -128,7 +124,7 @@ async fn click_new_tab(selector: &str, state: &mut DaemonState) -> Result<Value,
         .call_function(
             &target.context,
             CLICK_HREF_JS,
-            Some(node(&target)),
+            Some(target.node_ref()),
             Vec::new(),
         )
         .await?;
@@ -182,7 +178,12 @@ pub async fn focus(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
     let target = resolve_target(state, selector).await?;
     session(state)?
         .bidi
-        .call_function(&target.context, FOCUS_JS, Some(node(&target)), Vec::new())
+        .call_function(
+            &target.context,
+            FOCUS_JS,
+            Some(target.node_ref()),
+            Vec::new(),
+        )
         .await?;
     Ok(json!({ "focused": selector }))
 }
@@ -300,7 +301,7 @@ pub async fn scroll(cmd: &Value, state: &mut DaemonState) -> Result<Value, Strin
             .call_function(
                 &target.context,
                 SCROLL_BY_JS,
-                Some(node(&target)),
+                Some(target.node_ref()),
                 vec![json!(dx), json!(dy)],
             )
             .await?;
@@ -324,7 +325,7 @@ pub async fn scrollintoview(cmd: &Value, state: &mut DaemonState) -> Result<Valu
         .call_function(
             &target.context,
             SCROLL_INTO_VIEW_JS,
-            Some(node(&target)),
+            Some(target.node_ref()),
             Vec::new(),
         )
         .await?;
@@ -346,7 +347,7 @@ pub async fn dispatch(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
     let target = resolve_target(state, selector).await?;
     session(state)?
         .bidi
-        .call_function(&target.context, &js, Some(node(&target)), Vec::new())
+        .call_function(&target.context, &js, Some(target.node_ref()), Vec::new())
         .await?;
     Ok(json!({ "dispatched": event_type, "selector": selector }))
 }
@@ -363,7 +364,7 @@ pub async fn highlight(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         .call_function(
             &target.context,
             HIGHLIGHT_JS,
-            Some(node(&target)),
+            Some(target.node_ref()),
             Vec::new(),
         )
         .await?;

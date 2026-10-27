@@ -1,7 +1,5 @@
 //! Firefox read/query commands, semantic locators, frame switching and eval handles.
 
-use serde_json::{json, Value};
-
 use super::actions::session;
 use super::bidi::BidiClient;
 use super::target::{resolve_target, Target};
@@ -11,6 +9,7 @@ use crate::native::element::{
     ELEMENT_ENABLED_JS, ELEMENT_INNER_HTML_JS, ELEMENT_INNER_TEXT_JS, ELEMENT_INPUT_VALUE_JS,
     ELEMENT_STYLES_ALL_JS, ELEMENT_TEXT_JS, ELEMENT_VISIBLE_JS,
 };
+use serde_json::{json, Value};
 
 const TEMP_NODE_ID: i64 = -1;
 
@@ -23,27 +22,6 @@ const SHADOW_ROOTS_JS: &str = r#"function() {
     };
     walk(document);
     return out;
-}"#;
-
-const NAME_FILTER_JS: &str = r#"function(name, nodes) {
-  const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  const want = norm(name);
-  const nameOf = el => {
-    const lb = el.getAttribute('aria-labelledby');
-    if (lb) {
-      const root = el.getRootNode();
-      const t = lb.trim().split(/\s+/).map(id => { const r = root.getElementById ? root.getElementById(id) : null; return r ? r.textContent : ''; }).join(' ');
-      if (norm(t)) return t;
-    }
-    const al = el.getAttribute('aria-label');
-    if (al && norm(al)) return al;
-    if (el.labels && el.labels.length) return Array.from(el.labels).map(l => l.textContent).join(' ');
-    const alt = el.getAttribute('alt');
-    if (alt && norm(alt)) return alt;
-    if (el.tagName === 'INPUT' && /^(button|submit|reset)$/i.test(el.type) && el.value) return el.value;
-    return el.textContent || el.getAttribute('title') || '';
-  };
-  return nodes.find(el => norm(nameOf(el)).includes(want)) || null;
 }"#;
 
 const FIND_TEXT_JS: &str = r#"function(value, exact) {
@@ -76,13 +54,9 @@ fn selector(cmd: &Value) -> Result<&str, String> {
         .ok_or_else(|| "Missing 'selector' parameter".to_string())
 }
 
-fn target_ref(target: &Target) -> Value {
-    json!({"sharedId": target.shared_id})
-}
-
 /// Runs a Chrome element function body with `this` set to the resolved node.
 async fn call_on_target(bidi: &BidiClient, target: &Target, js: &str) -> Result<Value, String> {
-    bidi.call_function(&target.context, js, Some(target_ref(target)), Vec::new())
+    bidi.call_function(&target.context, js, Some(target.node_ref()), Vec::new())
         .await
 }
 
@@ -255,15 +229,6 @@ pub async fn find(cmd: &Value, state: &mut DaemonState) -> Result<Value, String>
     Ok(json!({ "elements": elements, "selector": sel }))
 }
 
-/// The BiDi locator for a role and optional accessible name.
-fn role_locator(role: &str, name: Option<&str>) -> Value {
-    let mut value = json!({ "role": role });
-    if let Some(name) = name {
-        value["name"] = json!(name);
-    }
-    json!({ "type": "accessibility", "value": value })
-}
-
 /// The BiDi locator for the non-role semantic strategies.
 fn semantic_locator(strategy: &str, value: &str) -> Value {
     let quoted = serde_json::to_string(value).unwrap_or_default();
@@ -321,48 +286,6 @@ async fn locate_deep(
         .await?
         .into_iter()
         .next())
-}
-
-/// Every match in the document and in open shadow roots.
-async fn locate_all(
-    bidi: &BidiClient,
-    context: &str,
-    locator: Value,
-) -> Result<Vec<Value>, String> {
-    let mut nodes = locate_nodes(bidi, context, locator.clone(), None).await?;
-    let roots = bidi
-        .call_function(context, SHADOW_ROOTS_JS, None, vec![])
-        .await?;
-    let roots = roots.as_array().cloned().unwrap_or_default();
-    if !roots.is_empty() {
-        nodes.extend(locate_nodes(bidi, context, locator, Some(roots)).await?);
-    }
-    Ok(nodes)
-}
-
-/// Finds a role match whose name contains `name` ignoring case and extra whitespace, as Chrome does without `exact`.
-async fn locate_role_loose(
-    bidi: &BidiClient,
-    context: &str,
-    role: &str,
-    name: &str,
-) -> Result<Option<Value>, String> {
-    if let Some(node) = locate_deep(bidi, context, role_locator(role, Some(name))).await? {
-        return Ok(Some(node));
-    }
-    let candidates = locate_all(bidi, context, role_locator(role, None)).await?;
-    if candidates.is_empty() {
-        return Ok(None);
-    }
-    let found = bidi
-        .call_function(
-            context,
-            NAME_FILTER_JS,
-            None,
-            vec![json!(name), json!(candidates)],
-        )
-        .await?;
-    Ok(found["sharedId"].is_string().then_some(found))
 }
 
 fn target_from_node(context: &str, node: &Value) -> Result<Target, String> {
@@ -467,17 +390,36 @@ pub async fn getbyrole(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     let exact = cmd.get("exact").and_then(Value::as_bool).unwrap_or(false);
     let ff = session(state)?;
     let context = ff.context.clone();
-    let node = match name {
-        Some(n) if !exact => locate_role_loose(&ff.bidi, &context, role, n).await?,
-        _ => locate_deep(&ff.bidi, &context, role_locator(role, name)).await?,
+    let target = if chrome::is_presentational_role(role) || role.eq_ignore_ascii_case("directory") {
+        let locator = chrome::build_presentational_role_locator_js(role, name, exact);
+        let js = format!("function() {{ return ({locator})(document); }}");
+        let found = ff.bidi.call_function(&context, &js, None, vec![]).await?;
+        found["sharedId"].as_str().map(|shared_id| Target {
+            context,
+            shared_id: shared_id.to_string(),
+        })
+    } else {
+        let root = super::snapshot::capture_tree(ff, &context).await?;
+        let mut targets = Vec::new();
+        let nodes = super::snapshot::ax_nodes_from_snapshot(&root, &mut |node| {
+            let shared_id = node["abSid"].as_str()?.to_string();
+            let node_context = node["abCtx"].as_str()?.to_string();
+            let backend_node_id = targets.len() as i64;
+            targets.push(Target {
+                context: node_context,
+                shared_id,
+            });
+            Some(backend_node_id)
+        });
+        let (backend_node_id, _) = chrome::find_ax_node_by_role(&nodes, role, name, exact)?;
+        Some(targets.swap_remove(backend_node_id as usize))
     };
-    let Some(node) = node.as_ref() else {
+    let Some(target) = target else {
         return Err(format!(
             "No element found: {}",
             chrome::build_role_selector(role, name, exact)
         ));
     };
-    let target = target_from_node(&context, node)?;
     run_subaction(cmd, state, &target).await
 }
 
@@ -668,21 +610,6 @@ mod tests {
             .unwrap();
         });
         BidiClient::connect(&url).await.unwrap()
-    }
-
-    #[test]
-    fn role_locator_uses_the_accessibility_locator() {
-        assert_eq!(
-            role_locator("button", Some("Save")),
-            json!({
-                "type": "accessibility",
-                "value": {"role": "button", "name": "Save"},
-            })
-        );
-        assert_eq!(
-            role_locator("textbox", None),
-            json!({"type": "accessibility", "value": {"role": "textbox"}})
-        );
     }
 
     #[test]

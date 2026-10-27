@@ -1,6 +1,6 @@
 //! Resolves refs and selectors to BiDi node handles for Firefox element commands.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::actions::session;
 use super::session::FirefoxSession;
@@ -12,6 +12,12 @@ use crate::native::element::{build_find_element_js, parse_ref, RefEntry, IS_CONN
 pub struct Target {
     pub context: String,
     pub shared_id: String,
+}
+
+impl Target {
+    pub(crate) fn node_ref(&self) -> Value {
+        json!({"sharedId": self.shared_id})
+    }
 }
 
 /// Finds the first element matching a CSS or `xpath=` selector in `context`.
@@ -26,10 +32,14 @@ pub async fn find_element(
 }
 
 async fn is_connected(ff: &FirefoxSession, target: &Target) -> bool {
-    let this = json!({"sharedId": target.shared_id});
     let r = ff
         .bidi
-        .call_function(&target.context, IS_CONNECTED_JS, Some(this), vec![])
+        .call_function(
+            &target.context,
+            IS_CONNECTED_JS,
+            Some(target.node_ref()),
+            vec![],
+        )
         .await;
     r.is_ok_and(|v| v == true)
 }
@@ -44,7 +54,8 @@ pub async fn resolve_target(
         let ff = session(state)?;
         let context = ff.context.clone();
         let shared_id = find_element(ff, &context, selector_or_ref)
-            .await?
+            .await
+            .map_err(|error| format!("Could not resolve selector '{selector_or_ref}': {error}"))?
             .ok_or_else(|| format!("Element not found: {selector_or_ref}"))?;
         return Ok(Target { context, shared_id });
     };
