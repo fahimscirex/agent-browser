@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 
 use super::actions::session;
 use super::input::{
-    pointer_click, pointer_down, pointer_drag_path, pointer_hover, pointer_up, pointer_wheel,
-    touch_event, touch_swipe_path, touch_tap, Origin,
+    pointer_click, pointer_down, pointer_hover, pointer_up, pointer_wheel, touch_event,
+    touch_swipe_path, touch_tap, Origin,
 };
 use super::session::FirefoxSession;
 use super::target::{resolve_target, Target};
@@ -266,13 +266,32 @@ pub async fn drag(cmd: &Value, state: &mut DaemonState) -> Result<Value, String>
 
     let ff = session(state)?;
     let (sx, sy) = prepare(ff, &source_target, source, true).await?;
-    let (tx, ty) = prepare(ff, &target, target_selector, true).await?;
-    let actions = pointer_drag_path(
-        &Origin::Viewport { x: sx, y: sy },
-        &Origin::Viewport { x: tx, y: ty },
-        10,
-    );
-    perform(ff, &source_target.context, actions).await?;
+    let source_origin = Origin::Viewport { x: sx, y: sy };
+    let mut release_at = source_origin.clone();
+    let result: Result<(), String> = async {
+        perform(
+            ff,
+            &source_target.context,
+            pointer_down(&source_origin, "left"),
+        )
+        .await?;
+        let (tx, ty) = prepare(ff, &target, target_selector, true).await?;
+        let target_origin = Origin::Viewport { x: tx, y: ty };
+        release_at = target_origin.clone();
+        perform(ff, &source_target.context, pointer_hover(&target_origin)).await?;
+        perform(
+            ff,
+            &source_target.context,
+            pointer_up(&target_origin, "left"),
+        )
+        .await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        let _ = perform(ff, &source_target.context, pointer_up(&release_at, "left")).await;
+        return Err(error);
+    }
 
     Ok(json!({ "dragged": true, "source": source, "target": target_selector }))
 }
@@ -477,6 +496,9 @@ pub async fn wheel(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
 
 /// Low-level mouse input, defaulting coordinates to the last known position.
 pub async fn input_mouse(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    if cmd.get("clickCount").is_some() {
+        return Err("Raw clickCount is not supported on Firefox".to_string());
+    }
     let event_type = cmd
         .get("type")
         .and_then(Value::as_str)
@@ -758,6 +780,27 @@ mod tests {
                 .unwrap(),
             json!({ "dragged": true, "source": "@e1", "target": "@e2" })
         );
+    }
+
+    #[tokio::test]
+    async fn raw_click_count_is_rejected_without_action_or_state_change() {
+        let (mut state, calls) = state_with_refs(connected).await;
+        state.mouse_state.x = 17.0;
+        state.mouse_state.y = 23.0;
+        state.mouse_state.buttons = 1;
+
+        let error = input_mouse(
+            &json!({ "type": "mousePressed", "x": 80, "y": 90, "clickCount": 2 }),
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("clickCount"), "{error}");
+        assert_eq!(state.mouse_state.x, 17.0);
+        assert_eq!(state.mouse_state.y, 23.0);
+        assert_eq!(state.mouse_state.buttons, 1);
+        assert!(calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

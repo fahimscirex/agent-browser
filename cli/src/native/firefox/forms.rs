@@ -12,9 +12,64 @@ use super::target::{resolve_target, Target};
 use crate::native::actions::DaemonState;
 use crate::native::element::ELEMENT_CHECKED_JS;
 use crate::native::interaction::{
-    CLEAR_INPUT_TYPING_JS, CLEAR_VALUE_JS, CLICK_CHECKBOX_JS, FOCUS_JS, SELECT_ALL_JS,
-    SELECT_OPTION_JS,
+    CLEAR_INPUT_JS, CLEAR_VALUE_JS, CLICK_CHECKBOX_JS, FOCUS_JS, SELECT_ALL_JS, SELECT_OPTION_JS,
 };
+
+const LITERAL_EDIT_JS: &str = r#"function(text, replace, useActive) {
+    let el = useActive ? document.activeElement : this;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    if (!el || !el.isConnected || el.matches(':disabled') || el.readOnly) return 'unsupported';
+    const doc = el.ownerDocument;
+    const editable = el.isContentEditable || el.contentEditable === 'true' || el.contentEditable === 'plaintext-only';
+    const nativeEdit = () => {
+        let canceled = false;
+        const watch = event => canceled = canceled || event.defaultPrevented;
+        doc.addEventListener('beforeinput', watch);
+        let inserted;
+        try {
+            inserted = doc.execCommand && doc.execCommand(replace && text === '' ? 'delete' : 'insertText', false, text);
+        } catch {
+            inserted = false;
+        } finally {
+            doc.removeEventListener('beforeinput', watch);
+        }
+        return canceled ? 'canceled' : inserted ? 'ok' : null;
+    };
+    if (!replace && text === '') return 'ok';
+    if (editable) {
+        if (replace) {
+            const range = doc.createRange();
+            range.selectNodeContents(el);
+            const selection = doc.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }
+        return nativeEdit() || 'unsupported';
+    }
+    if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return 'unsupported';
+    let start;
+    let end;
+    try {
+        start = el.selectionStart;
+        end = el.selectionEnd;
+    } catch {}
+    const hasSelection = Number.isInteger(start) && Number.isInteger(end);
+    if (replace) try { el.select(); } catch {}
+    const result = replace || !hasSelection ? nativeEdit() : null;
+    if (result) return result;
+    const deleting = replace && text === '';
+    const inputType = deleting ? 'deleteContentBackward' : replace ? 'insertReplacementText' : 'insertText';
+    if (!el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType, data: text }))) return 'canceled';
+    if (hasSelection) {
+        el.setRangeText(text, replace ? 0 : start, replace ? el.value.length : end, 'end');
+    } else {
+        const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+        const value = replace ? text : el.value + text;
+        Object.getOwnPropertyDescriptor(prototype, 'value').set.call(el, value);
+    }
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType, data: text }));
+    return 'ok';
+}"#;
 
 fn require<'a>(cmd: &'a Value, key: &str) -> Result<&'a str, String> {
     cmd.get(key)
@@ -31,6 +86,28 @@ async fn run(
     ff.bidi
         .call_function(&target.context, js, Some(target.node_ref()), args)
         .await
+}
+
+async fn literal_edit(
+    ff: &FirefoxSession,
+    context: &str,
+    target: Option<&Target>,
+    text: &str,
+    replace: bool,
+) -> Result<(), String> {
+    let result = ff
+        .bidi
+        .call_function(
+            context,
+            LITERAL_EDIT_JS,
+            target.map(Target::node_ref),
+            vec![json!(text), json!(replace), json!(target.is_none())],
+        )
+        .await?;
+    match result.as_str() {
+        Some("ok" | "canceled") => Ok(()),
+        _ => Err("Text input is not supported for the focused element".to_string()),
+    }
 }
 
 async fn perform(ff: &FirefoxSession, context: &str, actions: Value) -> Result<(), String> {
@@ -60,6 +137,13 @@ async fn send_text(
         }
         _ => perform(ff, context, key_text_actions(text)).await,
     }
+}
+
+async fn insert_text(ff: &FirefoxSession, text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    literal_edit(ff, &ff.context, None, text, false).await
 }
 
 fn select_values(cmd: &Value) -> Vec<String> {
@@ -127,19 +211,14 @@ async fn click_control(ff: &FirefoxSession, target: &Target) -> Result<(), Strin
     Ok(())
 }
 
-/// Focuses the element, clears it through the shared page JS, then types `value` as key actions.
+/// Focuses the element and replaces its value with literal text.
 pub async fn fill(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let selector = require(cmd, "selector")?;
     let value = require(cmd, "value")?;
     let target = resolve_target(state, selector).await?;
     let ff = session(state)?;
     run(ff, &target, FOCUS_JS, vec![]).await?;
-    run(ff, &target, SELECT_ALL_JS, vec![]).await?;
-    if value.is_empty() {
-        perform(ff, &target.context, key_chord_actions("Backspace")).await?;
-    } else {
-        send_text(ff, &target.context, value, None).await?;
-    }
+    literal_edit(ff, &target.context, Some(&target), value, true).await?;
     Ok(json!({ "filled": selector }))
 }
 
@@ -153,7 +232,7 @@ pub async fn type_text(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     let ff = session(state)?;
     run(ff, &target, FOCUS_JS, vec![]).await?;
     if clear {
-        run(ff, &target, CLEAR_INPUT_TYPING_JS, vec![]).await?;
+        run(ff, &target, CLEAR_INPUT_JS, vec![]).await?;
     }
     send_text(ff, &target.context, text, delay).await?;
     Ok(json!({ "typed": text }))
@@ -194,8 +273,7 @@ pub async fn keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         }
         Some("insertText") => {
             let text = require(cmd, "text")?;
-            let ff = session(state)?;
-            send_text(ff, &ff.context, text, None).await?;
+            insert_text(session(state)?, text).await?;
             Ok(json!({ "inserted": true }))
         }
         _ => {
@@ -203,6 +281,12 @@ pub async fn keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
                 .get("eventType")
                 .and_then(Value::as_str)
                 .unwrap_or("keyDown");
+            if event_type == "char" {
+                let text = require(cmd, "text")?;
+                let ff = session(state)?;
+                literal_edit(ff, &ff.context, None, text, false).await?;
+                return Ok(json!({ "dispatched": event_type }));
+            }
             let key = cmd
                 .get("key")
                 .and_then(Value::as_str)
@@ -218,6 +302,12 @@ pub async fn keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
 /// Sends one raw key event from the `input_keyboard` options.
 pub async fn input_keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let event_type = cmd.get("type").and_then(Value::as_str).unwrap_or("keyDown");
+    if event_type == "char" {
+        let text = require(cmd, "text")?;
+        let ff = session(state)?;
+        literal_edit(ff, &ff.context, None, text, false).await?;
+        return Ok(json!({ "dispatched": event_type }));
+    }
     let key = cmd
         .get("key")
         .and_then(Value::as_str)
@@ -231,8 +321,7 @@ pub async fn input_keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Valu
 /// Types `text` into the active tab without targeting an element.
 pub async fn inserttext(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let text = require(cmd, "text")?;
-    let ff = session(state)?;
-    send_text(ff, &ff.context, text, None).await?;
+    insert_text(session(state)?, text).await?;
     Ok(json!({ "inserted": true }))
 }
 
@@ -342,6 +431,8 @@ mod tests {
                 let js = req["params"]["functionDeclaration"].as_str().unwrap_or("");
                 if js.starts_with("() =>") {
                     script(json!({"type": "node", "sharedId": "node-1"}))
+                } else if js.contains("function(text, replace, useActive)") {
+                    script(json!({"type": "string", "value": "ok"}))
                 } else {
                     script(json!({"type": "undefined"}))
                 }
@@ -392,7 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn key_commands_send_bidi_key_actions_and_return_chrome_shapes() {
-        let (ff, _tx, calls) = fake_session().await;
+        let (ff, _tx, calls) = fake_session_with(node_responder).await;
         let mut state = state_with(ff);
 
         assert_eq!(
@@ -437,16 +528,27 @@ mod tests {
             json!({"dispatched": "keyDown"})
         );
         assert_eq!(
+            inserttext(&json!({"text": ""}), &mut state).await.unwrap(),
+            json!({"inserted": true})
+        );
+        assert_eq!(
             inserttext(&json!({"text": "x"}), &mut state).await.unwrap(),
             json!({"inserted": true})
         );
 
-        assert_eq!(calls.lock().unwrap().len(), 8);
-        assert!(calls
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|method| method == "input.performActions"));
+        assert_all(
+            &calls,
+            &[
+                "input.performActions",
+                "input.performActions",
+                "input.performActions",
+                "input.performActions",
+                "script.callFunction",
+                "input.performActions",
+                "input.performActions",
+                "script.callFunction",
+            ],
+        );
     }
 
     #[tokio::test]
@@ -473,7 +575,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fill_focuses_selects_all_then_types() {
+    async fn fill_focuses_then_replaces_with_literal_text() {
         let (ff, _tx, calls) = fake_session_with(node_responder).await;
         let mut state = state_with(ff);
         let result = fill(&json!({"selector": "#email", "value": "a@b.c"}), &mut state)
@@ -486,7 +588,6 @@ mod tests {
                 "script.callFunction",
                 "script.callFunction",
                 "script.callFunction",
-                "input.performActions",
             ],
         );
     }

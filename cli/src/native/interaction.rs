@@ -224,12 +224,6 @@ pub async fn fill(
     Ok(())
 }
 
-pub(crate) const CLEAR_INPUT_TYPING_JS: &str = r#"function() {
-                        this.select && this.select();
-                        this.value = '';
-                        this.dispatchEvent(new Event('input', { bubbles: true }));
-                    }"#;
-
 #[allow(clippy::too_many_arguments)]
 pub async fn type_text(
     client: &CdpClient,
@@ -270,7 +264,7 @@ pub async fn type_text(
             .send_command_typed::<_, Value>(
                 "Runtime.callFunctionOn",
                 &CallFunctionOnParams {
-                    function_declaration: CLEAR_INPUT_TYPING_JS.to_string(),
+                    function_declaration: CLEAR_INPUT_JS.to_string(),
                     object_id: Some(object_id),
                     arguments: None,
                     return_by_value: Some(true),

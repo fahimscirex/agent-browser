@@ -14669,7 +14669,7 @@ async fn firefox_close(state: &mut DaemonState) {
     assert_eq!(get_data(&resp)["closed"], true);
 }
 
-/// Fill replaces controlled values and reaches password inputs by ref, fill/type reach contenteditables and cross-origin frames, and inserttext honors a canceled beforeinput.
+/// Fill replaces controlled values and reaches password inputs by ref, fill/type reach contenteditables and cross-origin frames, and inserttext and raw char succeed without editing when beforeinput is canceled, like Chrome.
 #[tokio::test]
 #[ignore = "requires FIREFOX_BIN; run serially"]
 async fn e2e_firefox_form_entry() {
@@ -14684,7 +14684,10 @@ async fn e2e_firefox_form_entry() {
     for (label, action, args) in [
         ("Issues", "fill", json!({ "value": "is:issue firefox" })),
         ("Editor", "fill", json!({ "value": "filled editor" })),
+        ("Literal", "fill", json!({ "value": "one\ttwo\nthree" })),
         ("Password", "fill", json!({ "value": "hunter2" })),
+        ("Email", "fill", json!({ "value": "user@example.test" })),
+        ("Number", "fill", json!({ "value": "42" })),
         ("Frame fill", "fill", json!({ "value": "cross frame fill" })),
         ("Frame type", "type", json!({ "text": "cross frame type" })),
     ] {
@@ -14699,14 +14702,45 @@ async fn e2e_firefox_form_entry() {
     )
     .await;
     assert_success(&inserted);
+    let raw_char = firefox_command(
+        &mut state,
+        json!({ "id": "char", "action": "input_keyboard", "type": "char", "text": "!" }),
+    )
+    .await;
+    assert_success(&raw_char);
+
+    firefox_eval(
+        &mut state,
+        "const input = document.querySelector('#shadow-host').shadowRoot.querySelector('input'); input.focus(); input.setSelectionRange(3, 3); 0",
+    )
+    .await;
+    let raw_char = firefox_command(
+        &mut state,
+        json!({ "id": "shadow-char", "action": "input_keyboard", "type": "char", "text": "!" }),
+    )
+    .await;
+    assert_success(&raw_char);
+    for (id, field, text) in [
+        ("email-char", "email", ".org"),
+        ("number-char", "number", "3"),
+    ] {
+        firefox_eval(&mut state, &format!("{field}.focus()")).await;
+        assert_success(
+            &firefox_command(
+                &mut state,
+                json!({ "id": id, "action": "input_keyboard", "type": "char", "text": text }),
+            )
+            .await,
+        );
+    }
 
     assert_eq!(
         firefox_eval(
             &mut state,
-            "[issues.value, editor.textContent, password.value, guarded.value].join('|')"
+            "JSON.stringify([issues.value, editor.textContent, literal.value, password.value, guarded.value, email.value, number.value, document.querySelector('#shadow-host').shadowRoot.querySelector('input').value])"
         )
         .await,
-        "is:issue firefox|filled editor|hunter2|"
+        "[\"is:issue firefox\",\"filled editor\",\"one\\ttwo\\nthree\",\"hunter2\",\"\",\"user@example.test.org\",\"423\",\"nes!ted\"]"
     );
     for (label, expected) in [
         ("Frame fill", "cross frame fill"),
@@ -14729,6 +14763,14 @@ async fn e2e_firefox_form_entry() {
             .unwrap();
         assert_eq!(value, expected);
     }
+    firefox_eval(&mut state, "literal.value = ''; literal.focus()").await;
+    let inserted = firefox_command(
+        &mut state,
+        json!({ "id": "literal-insert", "action": "inserttext", "text": "a\tb" }),
+    )
+    .await;
+    assert_success(&inserted);
+    assert_eq!(firefox_eval(&mut state, "literal.value").await, "a\tb");
     firefox_close(&mut state).await;
 }
 
@@ -14807,6 +14849,21 @@ async fn e2e_firefox_core_flow_and_ref_stability() {
 
     let name = firefox_ref(&mut state, "Name").await;
     assert_success(&firefox_act(&mut state, "fill", &name, json!({ "value": "Ada" })).await);
+    assert_success(
+        &firefox_command(
+            &mut state,
+            json!({ "id": "mouse-before-touch", "action": "input_mouse", "type": "mouseMoved", "x": 20, "y": 20 }),
+        )
+        .await,
+    );
+    assert_success(&firefox_act(&mut state, "tap", &name, json!({})).await);
+    assert_success(
+        &firefox_command(
+            &mut state,
+            json!({ "id": "mouse-after-touch", "action": "input_mouse", "type": "mouseMoved", "x": 30, "y": 30 }),
+        )
+        .await,
+    );
     let go = firefox_ref(&mut state, "Go").await;
     assert_success(&firefox_act(&mut state, "click", &go, json!({})).await);
     assert_eq!(firefox_title(&mut state).await, "Hello Ada");
@@ -14823,6 +14880,55 @@ async fn e2e_firefox_core_flow_and_ref_stability() {
     firefox_close(&mut state).await;
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     assert!(!firefox_processes_using(tmp.path()));
+}
+
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_drag_scrolls_destination_and_releases_on_failure() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &format!("{}forms.html", fixture.url)).await;
+    firefox_eval(&mut state, "window.__dragTrace = []; document.addEventListener('pointerdown', e => __dragTrace.push(`down:${e.target.id}:${e.buttons}`), true); document.addEventListener('pointerup', e => __dragTrace.push(`up:${e.target.id}:${e.buttons}`), true)").await;
+
+    let drag = firefox_command(
+        &mut state,
+        json!({ "id": "drag", "action": "drag", "source": "#drag-source", "target": "#drag-target" }),
+    )
+    .await;
+    assert_success(&drag);
+    assert_eq!(
+        firefox_eval(&mut state, "window.__dragTrace.join('|')").await,
+        "down:drag-source:1|up:drag-target:0"
+    );
+
+    firefox_eval(
+        &mut state,
+        "window.__dragTrace = []; document.querySelector('#drag-cover').style.display = 'block'",
+    )
+    .await;
+    let failed_drag = firefox_command(
+        &mut state,
+        json!({ "id": "blocked-drag", "action": "drag", "source": "#drag-source", "target": "#drag-target" }),
+    )
+    .await;
+    assert!(
+        !failed_drag["success"].as_bool().unwrap_or(true),
+        "{failed_drag}"
+    );
+    assert!(failed_drag["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("drag-cover"));
+    assert!(firefox_eval(&mut state, "window.__dragTrace.join('|')")
+        .await
+        .as_str()
+        .unwrap_or("")
+        .ends_with(":0"));
+    firefox_close(&mut state).await;
 }
 
 /// PR2: a confirm() dialog is resolved with `dialog accept`.
