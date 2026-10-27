@@ -90,19 +90,6 @@ pub(crate) fn permission(name: &str, state: &str, origin: &str) -> Command {
     )
 }
 
-/// Maps a device preset to viewport and user agent commands.
-pub(crate) fn device(name: &str) -> Result<Vec<Command>, String> {
-    let preset = device_preset(name)?;
-    Ok(vec![
-        viewport(
-            preset.width as i64,
-            preset.height as i64,
-            preset.device_scale_factor,
-        ),
-        user_agent(preset.user_agent),
-    ])
-}
-
 /// Validates media emulation and maps it to DevTools `targetConfiguration` values.
 pub(crate) fn validate_media(media: &EmulatedMedia) -> Result<Value, String> {
     let mut config = Map::new();
@@ -237,7 +224,7 @@ pub async fn apply_to_context(ff: &FirefoxSession, context: &str) -> Result<(), 
     Ok(())
 }
 
-/// Sets the viewport and returns Chrome's `viewport` result shape.
+/// Sets a desktop viewport and returns Chrome's `viewport` result shape.
 pub async fn set_viewport(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let width = cmd.get("width").and_then(Value::as_i64).unwrap_or(1280);
     let height = cmd.get("height").and_then(Value::as_i64).unwrap_or(720);
@@ -245,11 +232,13 @@ pub async fn set_viewport(cmd: &Value, state: &mut DaemonState) -> Result<Value,
         .get("deviceScaleFactor")
         .and_then(Value::as_f64)
         .unwrap_or(1.0);
-    let mobile = cmd.get("mobile").and_then(Value::as_bool).unwrap_or(false);
+    if cmd.get("mobile").and_then(Value::as_bool).unwrap_or(false) {
+        return Err("Firefox does not support mobile viewport emulation".to_string());
+    }
     let context = session(state)?.top_context.clone();
     send_scoped(session(state)?, &context, viewport(width, height, scale)).await?;
     session(state)?.emulation.viewport = Some((width, height, scale));
-    state.viewport = Some((width as i32, height as i32, scale, mobile));
+    state.viewport = Some((width as i32, height as i32, scale, false));
     if let Some(ref server) = state.stream_server {
         server.set_viewport(width as u32, height as u32).await;
     }
@@ -257,11 +246,11 @@ pub async fn set_viewport(cmd: &Value, state: &mut DaemonState) -> Result<Value,
         "width": width,
         "height": height,
         "deviceScaleFactor": scale,
-        "mobile": mobile,
+        "mobile": false,
     }))
 }
 
-/// Applies a device preset and returns Chrome's `device` result shape.
+/// Applies a device preset and returns Chrome's result shape; Firefox rejects mobile presets.
 pub async fn set_device(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let name = cmd
         .get("name")
@@ -269,11 +258,21 @@ pub async fn set_device(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
         .and_then(Value::as_str)
         .ok_or("Missing 'name' parameter")?;
     let preset = device_preset(name)?;
-    let commands = device(name)?;
-    let context = session(state)?.top_context.clone();
-    for command in commands {
-        send_scoped(session(state)?, &context, command).await?;
+    if preset.mobile {
+        return Err("Firefox does not support mobile device emulation".to_string());
     }
+    let context = session(state)?.top_context.clone();
+    send_scoped(
+        session(state)?,
+        &context,
+        viewport(
+            preset.width as i64,
+            preset.height as i64,
+            preset.device_scale_factor,
+        ),
+    )
+    .await?;
+    send_scoped(session(state)?, &context, user_agent(preset.user_agent)).await?;
     {
         let ff = session(state)?;
         ff.emulation.viewport = Some((
@@ -473,36 +472,6 @@ mod tests {
     }
 
     #[test]
-    fn iphone_preset_maps_viewport_and_dpr_without_touch_override() {
-        let commands = device("iPhone 15").unwrap();
-        assert_eq!(
-            commands
-                .iter()
-                .map(|(method, _)| *method)
-                .collect::<Vec<_>>(),
-            vec![
-                "browsingContext.setViewport",
-                "emulation.setUserAgentOverride",
-            ]
-        );
-        let lookup = |method: &str| {
-            commands
-                .iter()
-                .find(|(name, _)| *name == method)
-                .map(|(_, params)| params)
-                .unwrap_or_else(|| panic!("no {method} command"))
-        };
-
-        let viewport = lookup("browsingContext.setViewport");
-        assert_eq!(viewport["viewport"]["width"], 393);
-        assert_eq!(viewport["viewport"]["height"], 852);
-        assert_eq!(viewport["devicePixelRatio"], 3.0);
-
-        let ua = lookup("emulation.setUserAgentOverride");
-        assert!(ua["userAgent"].as_str().unwrap().contains("iPhone"));
-    }
-
-    #[test]
     fn offline_toggles_network_conditions() {
         let (method, params) = offline(true);
         assert_eq!(method, "emulation.setNetworkConditions");
@@ -545,24 +514,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_sends_viewport_and_user_agent_without_touch_override() {
+    async fn mobile_emulation_is_rejected_without_commands_or_state_changes() {
         let (mut state, calls) = session_state().await;
-        let result = set_device(&json!({"device": "iPhone 15"}), &mut state)
-            .await
-            .unwrap();
+        state.viewport = Some((800, 600, 1.5, false));
+        let ff = state.firefox.as_mut().unwrap();
+        ff.emulation.viewport = Some((800, 600, 1.5));
+        ff.emulation.user_agent = Some("Desktop Agent".to_string());
 
-        assert_eq!(result["device"], "iPhone 15");
-        assert_eq!(result["width"], 393);
-        assert_eq!(result["height"], 852);
-        assert_eq!(result["deviceScaleFactor"], 3.0);
-        assert_eq!(result["mobile"], true);
+        let error = set_viewport(
+            &json!({"width": 375, "height": 812, "deviceScaleFactor": 3.0, "mobile": true}),
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("mobile viewport emulation"));
+        assert_eq!(state.viewport, Some((800, 600, 1.5, false)));
         assert_eq!(
-            calls.lock().unwrap().clone(),
-            vec![
-                "browsingContext.setViewport",
-                "emulation.setUserAgentOverride",
-            ]
+            state.firefox.as_ref().unwrap().emulation.viewport,
+            Some((800, 600, 1.5))
         );
+
+        let error = set_device(&json!({"device": "iPhone 15"}), &mut state)
+            .await
+            .unwrap_err();
+        assert!(error.contains("mobile device emulation"));
+        assert_eq!(state.viewport, Some((800, 600, 1.5, false)));
+        assert_eq!(
+            state.firefox.as_ref().unwrap().emulation.viewport,
+            Some((800, 600, 1.5))
+        );
+        assert_eq!(
+            state
+                .firefox
+                .as_ref()
+                .unwrap()
+                .emulation
+                .user_agent
+                .as_deref(),
+            Some("Desktop Agent")
+        );
+        assert!(calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

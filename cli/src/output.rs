@@ -2511,8 +2511,8 @@ Usage: agent-browser set <setting> [args]
 Configures various browser settings and emulation options.
 
 Settings:
-  viewport <w> <h> [scale]   Set viewport size (scale = deviceScaleFactor, e.g. 2 for retina)
-  device <name>              Emulate device (e.g., "iPhone 12")
+  viewport <w> <h> [scale]   Set desktop viewport (mobile mode is unsupported in Firefox)
+  device <name>              Emulate device (mobile presets are unsupported in Firefox)
   geo <lat> <lng>            Set geolocation
   offline [on|off]           Toggle offline mode; off restores the new-tab default
   headers <json>             Set extra HTTP headers; use {} to clear them for new tabs

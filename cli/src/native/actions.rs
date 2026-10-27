@@ -8346,9 +8346,9 @@ async fn handle_set_media(cmd: &Value, state: &mut DaemonState) -> Result<Value,
     Ok(json!({ "set": true }))
 }
 
-/// Chrome may still be flushing a download to disk after signalling
+/// A browser may still be flushing a download to disk after signalling
 /// completion; wait briefly for the file to appear.
-async fn wait_for_downloaded_file(path: &std::path::Path) -> bool {
+pub(crate) async fn wait_for_downloaded_file(path: &std::path::Path) -> bool {
     for _ in 0..10 {
         if path.exists() {
             return true;
@@ -11766,10 +11766,10 @@ async fn handle_waitfordownload(cmd: &Value, state: &mut DaemonState) -> Result<
     move_download(&saved, path_str).inspect_err(|_| state.downloads.release(&record.guid))
 }
 
-/// The saved path comes from a CDP event, so only a browser this daemon
+/// The saved path comes from a browser event, so only a browser this daemon
 /// launched is trusted to name a local file. A remote endpoint could otherwise
 /// point the move at any file the daemon can read.
-fn may_move_download(
+pub(crate) fn may_move_download(
     saved: &std::path::Path,
     launched_locally: bool,
     download_dir: Option<&str>,
@@ -11786,7 +11786,7 @@ fn may_move_download(
     }
 }
 
-fn move_download(saved: &std::path::Path, path_str: &str) -> Result<Value, String> {
+pub(crate) fn move_download(saved: &std::path::Path, path_str: &str) -> Result<Value, String> {
     let dest = if std::path::Path::new(path_str).is_absolute() {
         PathBuf::from(path_str)
     } else {
@@ -11794,6 +11794,9 @@ fn move_download(saved: &std::path::Path, path_str: &str) -> Result<Value, Strin
             .map_err(|e| format!("Failed to get current directory: {}", e))?
             .join(path_str)
     };
+    if saved == dest {
+        return Ok(json!({ "path": dest.to_string_lossy() }));
+    }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create download directory: {}", e))?;

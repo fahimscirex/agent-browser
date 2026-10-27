@@ -836,14 +836,17 @@ pub async fn download(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         .get("path")
         .and_then(Value::as_str)
         .ok_or("Missing 'path' parameter")?;
-    let (dir, dest) = chrome::resolve_download_dest(path)?;
+    let (dir, _) = chrome::resolve_download_dest(path)?;
+    let download_dir = dir
+        .to_str()
+        .ok_or("Download directory path is not valid UTF-8")?;
     let target = resolve_target(state, selector).await?;
     let ff = session(state)?;
     let mut rx = ff.bidi.subscribe();
     ff.bidi
         .send(
             "browser.setDownloadBehavior",
-            json!({"downloadBehavior": {"type": "allowed", "destinationFolder": dir}}),
+            json!({"downloadBehavior": {"type": "allowed", "destinationFolder": download_dir}}),
         )
         .await?;
     let this = json!({"sharedId": target.shared_id});
@@ -869,17 +872,22 @@ pub async fn download(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         "Timeout waiting for download to complete",
     )
     .await?;
-    match saved {
-        Some(file) if std::path::Path::new(&file) != dest => std::fs::rename(&file, &dest)
-            .map_err(|e| format!("Failed to rename downloaded file: {e}"))?,
-        Some(_) => {}
-        None => {
-            return Err(
-                "Download completed but could not determine the downloaded file name".to_string(),
-            )
-        }
+    let saved =
+        saved.ok_or("Download completed but could not determine the downloaded file name")?;
+    let saved = std::path::Path::new(&saved);
+    if !chrome::wait_for_downloaded_file(saved).await {
+        return Err(format!(
+            "Download completed but no file is at {}",
+            saved.display()
+        ));
     }
-    Ok(json!({ "path": dest.to_string_lossy() }))
+    if !chrome::may_move_download(saved, true, Some(download_dir)) {
+        return Err(format!(
+            "Refusing to move downloaded file from {}",
+            saved.display()
+        ));
+    }
+    chrome::move_download(saved, path)
 }
 
 /// `waitfordownload`: waits for the next finished download.
@@ -897,13 +905,19 @@ pub async fn waitfordownload(cmd: &Value, state: &mut DaemonState) -> Result<Val
         "Timeout waiting for download",
     )
     .await?;
-    let path = cmd
-        .get("path")
-        .and_then(Value::as_str)
-        .map(String::from)
-        .or(saved)
-        .unwrap_or_else(|| "download".to_string());
-    Ok(json!({ "path": path }))
+    let Some(path) = cmd.get("path").and_then(Value::as_str) else {
+        return Ok(json!({ "path": saved.unwrap_or_else(|| "download".to_string()) }));
+    };
+    let saved =
+        saved.ok_or("Download completed but the browser did not report where it saved the file")?;
+    let saved = std::path::Path::new(&saved);
+    if !chrome::wait_for_downloaded_file(saved).await {
+        return Err(format!(
+            "Download completed but no file is at {}",
+            saved.display()
+        ));
+    }
+    chrome::move_download(saved, path)
 }
 
 #[cfg(test)]

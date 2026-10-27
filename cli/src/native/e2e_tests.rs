@@ -15456,6 +15456,36 @@ async fn e2e_firefox_download() {
     .await;
     assert_success(&resp);
     assert_eq!(std::fs::read_to_string(&dest).unwrap(), "downloaded");
+
+    let wait_dest = out.path().join("waited.txt");
+    let ff = state.firefox.as_ref().unwrap();
+    let bidi = ff.bidi.clone();
+    let context = ff.top_context.clone();
+    let trigger = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        bidi.call_function(
+            &context,
+            "function() { document.querySelector('#dl').click(); return true; }",
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
+    });
+    let resp = firefox_command(
+        &mut state,
+        json!({
+            "id": "waitfordownload",
+            "action": "waitfordownload",
+            "path": wait_dest.to_str().unwrap(),
+            "timeout": 5000,
+        }),
+    )
+    .await;
+    trigger.await.unwrap();
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["path"], json!(wait_dest.to_string_lossy()));
+    assert_eq!(std::fs::read_to_string(&wait_dest).unwrap(), "downloaded");
     firefox_close(&mut state).await;
 }
 

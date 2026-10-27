@@ -1151,14 +1151,14 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_SET_VIEWPORT,
             "Set viewport",
-            "Set viewport size.",
+            "Set viewport size. Firefox does not support mobile mode.",
             json!({ "width": int_schema(), "height": int_schema(), "scale": number_schema() }),
             &["width", "height"],
         ),
         tool(
             TOOL_SET_DEVICE,
             "Set device",
-            "Emulate a device by name.",
+            "Emulate a device by name. Firefox does not support mobile device presets.",
             json!({ "device": { "type": "string" } }),
             &["device"],
         ),

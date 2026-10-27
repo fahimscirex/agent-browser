@@ -203,6 +203,8 @@ agent-browser set media dark                  # Emulate color scheme
 agent-browser set media light reduced-motion  # Light mode + reduced motion
 ```
 
+Firefox does not support mobile viewport mode or mobile device presets.
+
 ## Cookies and Storage
 
 ```bash
